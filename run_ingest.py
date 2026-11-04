@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 
-from claimparser import db, ingest
+from claimparser import config, db, ingest
 from claimparser.config import DEFAULT_SAMPLES
 
 
@@ -24,7 +24,10 @@ def main() -> None:
     ap.add_argument("--path", default=str(DEFAULT_SAMPLES))
     ap.add_argument("--reset", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--db", choices=["local", "cloud"], help="target database (default: auto)")
     a = ap.parse_args()
+    if a.db:
+        config.set_mode(a.db)
     root = Path(a.path)
 
     if a.dry_run:
@@ -34,6 +37,10 @@ def main() -> None:
                 print(json.dumps({"claim": c["row"], "lines": c["lines"]}, indent=1, default=str))
         return
 
+    ok, msg = db.test_connection()
+    print(msg)
+    if not ok:
+        sys.exit(1)
     summary = ingest.ingest_root(root, reset=a.reset)
     print("\nDONE:", summary)
 

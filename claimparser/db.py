@@ -6,9 +6,7 @@ import json
 import re
 from contextlib import contextmanager
 
-import pyodbc
-
-from .config import DB_NAME, conn_str
+from . import config
 
 SCHEMA = [
     """IF OBJECT_ID('dbo.policies') IS NULL CREATE TABLE dbo.policies (
@@ -119,18 +117,73 @@ SCHEMA = [
 ]
 
 
+class _Conn:
+    """Uniform wrapper so the rest of the code works with pyodbc (local) and pymssql (cloud).
+    SQL is written with '?' placeholders; they are converted to %s for pymssql."""
+
+    def __init__(self, raw, qmark: bool):
+        self.raw, self.qmark = raw, qmark
+
+    def execute(self, sql: str, *params):
+        if len(params) == 1 and isinstance(params[0], (list, tuple)):
+            params = tuple(params[0])
+        cur = self.raw.cursor()
+        if not self.qmark:
+            sql = sql.replace("?", "%s")
+        if params:
+            cur.execute(sql, params)
+        else:
+            cur.execute(sql)
+        return cur
+
+    def commit(self):
+        self.raw.commit()
+
+    def rollback(self):
+        self.raw.rollback()
+
+    def close(self):
+        self.raw.close()
+
+
+def _open(database: str | None, autocommit: bool = False) -> _Conn:
+    s = config.settings()
+    if s["driver"] == "pymssql":
+        import pymssql
+        raw = pymssql.connect(server=s["server"], port=str(s["port"]), user=s["user"], password=s["password"],
+                              database=database or s["database"], login_timeout=15, timeout=60,
+                              autocommit=autocommit, charset="UTF-8")
+        return _Conn(raw, qmark=False)
+    import pyodbc
+    return _Conn(pyodbc.connect(config.odbc_conn_str(database), autocommit=autocommit, timeout=10), qmark=True)
+
+
 def ensure_database() -> None:
-    """Create the target database on the local instance if it does not exist."""
-    cn = pyodbc.connect(conn_str("master"), autocommit=True, timeout=10)
+    """Local: create the database if missing. Cloud: the hosted database already exists, so do nothing."""
+    if config.mode() == "cloud":
+        return
+    name = config.database_name()
+    cn = _open("master", autocommit=True)
     try:
-        cn.execute(f"IF DB_ID('{DB_NAME}') IS NULL CREATE DATABASE [{DB_NAME}]")
+        cn.execute(f"IF DB_ID('{name}') IS NULL CREATE DATABASE [{name}]")
     finally:
         cn.close()
 
 
+def test_connection() -> tuple[bool, str]:
+    """Used by the UI / CLI to show a clear message instead of a stack trace."""
+    try:
+        ensure_database()
+        with connect() as cn:
+            cn.execute("SELECT 1").fetchone()
+        return True, f"Connected to {config.database_name()} on {config.server_label()} ({config.mode()})"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {str(e)[:400]}"
+
+
 @contextmanager
 def connect():
-    cn = pyodbc.connect(conn_str(DB_NAME), timeout=10)
+    cn = _open(config.database_name())
     try:
         yield cn
         cn.commit()
@@ -204,7 +257,10 @@ def save_case(case: dict) -> None:
 def query_df(sql: str, params=()):
     import pandas as pd
     with connect() as cn:
-        return pd.read_sql_query(sql, cn, params=list(params) if params else None)
+        cur = cn.execute(sql, *([list(params)] if params else []))
+        cols = [c[0] for c in cur.description]
+        rows = [tuple(r) for r in cur.fetchall()]
+    return pd.DataFrame.from_records(rows, columns=cols, coerce_float=True)
 
 
 def update_claim_fields(claim_number: str, fields: dict) -> None:

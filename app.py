@@ -11,7 +11,8 @@ import pandas as pd
 import streamlit as st
 
 from claimparser import db, ingest
-from claimparser.config import DB_NAME, DEFAULT_SAMPLES, sql_settings
+from claimparser import config
+from claimparser.config import DEFAULT_SAMPLES
 
 LOGO = Path(__file__).parent / "CBInsureLogo.png"
 st.set_page_config(page_title="Co-Ordinated Benefit Plans | Claims Intake", page_icon=str(LOGO) if LOGO.exists() else None,
@@ -55,12 +56,36 @@ def kpi(col, label: str, value, kind: str = "") -> None:
                  unsafe_allow_html=True)
 
 
-try:
-    db.init_db()
-    db_ok = True
-except Exception as e:  # connection problems should be obvious
-    st.error(f"Cannot connect to SQL Server: {e}")
+# ---- database switch (Local SQL Server  <->  Cloud SQL Server) -----------------------------------
+import sys
+_opts = ["Cloud database", "Local database"]
+_default = 0 if config.mode() == "cloud" else 1
+with st.sidebar:
+    st.markdown("### Environment")
+    if sys.platform == "win32":
+        _choice = st.radio("Database", _opts, index=_default,
+                           help="Cloud = hosted SQL Server used for web deployment. Local = SQL Server LocalDB on this PC.")
+    else:
+        _choice = _opts[0]
+        st.info("Running on a hosted server: using the cloud database.")
+    config.set_mode("cloud" if _choice == _opts[0] else "local")
+    if config.mode() == "cloud" and not config.cloud_configured():
+        st.warning("Cloud credentials are not configured. Add a [cloud] section to Streamlit secrets "
+                   "(see .streamlit/secrets.toml.example).")
+    st.caption(f"Server: `{config.server_label() or 'not set'}`")
+    st.caption(f"Database: `{config.database_name() or 'not set'}`")
+
+_ok, _msg = db.test_connection()
+if not _ok:
+    st.error(f"Cannot connect to the {config.mode()} database. {_msg}")
+    st.info("Check the network/VPN, the server name and port, and that your IP is allowed by the database host. "
+            "You can switch databases in the sidebar.")
     st.stop()
+db.init_db()
+with st.sidebar:
+    st.success("Connected", icon=":material/check_circle:")
+DB_NAME = config.database_name()
+_server = config.server_label()
 
 import base64
 logo_html = ""
@@ -69,7 +94,7 @@ if LOGO.exists():
 st.markdown(f"""
 <div class="cbp-header">{logo_html}
   <div><div class="cbp-title">Claims Intake &amp; Document Extraction</div>
-  <div class="cbp-sub">Proof of concept &nbsp;|&nbsp; Database: <b>{DB_NAME}</b> on {sql_settings()['server']}</div></div>
+  <div class="cbp-sub">Proof of concept &nbsp;|&nbsp; {config.mode().title()} database: <b>{DB_NAME}</b> on {_server}</div></div>
 </div>""", unsafe_allow_html=True)
 
 _k = db.query_df("""SELECT (SELECT COUNT(*) FROM dbo.claims) AS claims,
@@ -93,8 +118,10 @@ with tab_ing:
     hint("Load a claim package folder. Scanned bills are read with OCR and stored against a Document ID.")
     st.subheader("Process claim folder")
     folder = st.text_input("Folder with case sub-folders", str(DEFAULT_SAMPLES))
+    if not Path(folder).exists():
+        st.warning("This folder is not available on this server. Use the upload option below.")
     reset = st.checkbox("Clear existing data first", value=False)
-    if st.button("Parse folder and load to SQL Server", type="primary"):
+    if st.button("Parse folder and load to SQL Server", type="primary", disabled=not Path(folder).exists()):
         log = st.empty()
         lines: list[str] = []
 
