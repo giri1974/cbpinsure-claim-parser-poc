@@ -1,0 +1,5 @@
+.venv/
+ocr_cache/
+scratch/
+__pycache__/
+.env
