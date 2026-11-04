@@ -30,6 +30,22 @@ ODBC_DRIVER = os.getenv("ODBC_DRIVER", "ODBC Driver 17 for SQL Server")
 LOCAL_DB_NAME = os.getenv("CLAIMS_DB_NAME", "CBPInsureClaims")
 
 _MODE: str | None = None
+_OCR_ENGINE: str | None = None
+
+
+# ------------------------------------------------------------------ OCR engine
+def set_engine(engine: str | None) -> None:
+    global _OCR_ENGINE
+    if engine not in (None, "auto", "tesseract", "rapidocr"):
+        raise ValueError("engine must be auto|tesseract|rapidocr")
+    _OCR_ENGINE = engine
+
+
+def ocr_engine() -> str:
+    # RapidOCR is the default: it scored better than Tesseract on the sample scans,
+    # and the parsers are tuned to its output. Override with OCR_ENGINE / the UI switch.
+    e = _OCR_ENGINE or os.getenv("OCR_ENGINE", "").strip().lower()
+    return e if e in ("auto", "tesseract", "rapidocr") else "rapidocr"
 
 
 # ------------------------------------------------------------------ mode

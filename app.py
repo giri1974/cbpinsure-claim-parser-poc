@@ -69,6 +69,16 @@ with st.sidebar:
         _choice = _opts[0]
         st.info("Running on a hosted server: using the cloud database.")
     config.set_mode("cloud" if _choice == _opts[0] else "local")
+    st.markdown("### OCR engine")
+    from claimparser.ocr import tesseract_available
+    _eng_opts = ["RapidOCR (recommended)", "Tesseract"]
+    _eng = st.radio("Engine", _eng_opts, index=0,
+                    help="RapidOCR scored better on the sample scans. Tesseract is optional and must be installed.")
+    if _eng == _eng_opts[1] and not tesseract_available():
+        st.warning("Tesseract is not installed. Run scripts/install_tesseract.ps1, then restart.")
+        config.set_engine("rapidocr")
+    else:
+        config.set_engine("tesseract" if _eng == _eng_opts[1] else "rapidocr")
     if config.mode() == "cloud" and not config.cloud_configured():
         st.warning("Cloud credentials are not configured. Add a [cloud] section to Streamlit secrets "
                    "(see .streamlit/secrets.toml.example).")

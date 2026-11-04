@@ -25,9 +25,12 @@ def main() -> None:
     ap.add_argument("--reset", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--db", choices=["local", "cloud"], help="target database (default: auto)")
+    ap.add_argument("--ocr", choices=["auto", "rapidocr", "tesseract"], help="OCR engine (default: rapidocr)")
     a = ap.parse_args()
     if a.db:
         config.set_mode(a.db)
+    if a.ocr:
+        config.set_engine(a.ocr)
     root = Path(a.path)
 
     if a.dry_run:

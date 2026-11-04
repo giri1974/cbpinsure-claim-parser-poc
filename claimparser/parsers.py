@@ -74,6 +74,32 @@ def clean_name(s: str | None) -> str | None:
     return s.title() if s else None
 
 
+def _trailing_charge(segment: str) -> float | None:
+    """Right-most money value on a service-line segment.
+
+    Handles clean values ($600.00, 166.55), OCR colon-for-dot (600:00) and the
+    space-split cents Tesseract often emits on form scans (166 55 -> 166.55,
+    1264 58 -> 1264.58). Dates like 022225 are excluded by requiring a 2-digit
+    cents group, and quantity/unit tokens are skipped by scanning right-to-left.
+    """
+    seg = re.sub(r"[|!?\"']", " ", segment)
+    cands: list[tuple[int, float]] = []
+    for m in re.finditer(r"(?<![\w.])(\d{1,6})\s*[.:]\s*(\d{2})(?![\w])", seg):
+        cands.append((m.start(), float(f"{m.group(1)}.{m.group(2)}")))
+    for m in re.finditer(r"(?<![\w.])(\d{1,6})\s+(\d{2})(?![\w\d])", seg):
+        cands.append((m.start(), float(f"{m.group(1)}.{m.group(2)}")))
+    for m in re.finditer(r"(?<![\w.:])(\d{1,6})\.(\d{2})\b", seg):
+        cands.append((m.start(), float(m.group(0))))
+    cands = [(pos, v) for pos, v in cands if v >= 1]
+    if cands:
+        # prefer the right-most plausible amount (charges sit at the end of the line)
+        return round(max(cands, key=lambda t: t[0])[1], 2)
+    # whole-dollar fallback (CMS-1500 $CHARGES box with no cents, e.g. "... AB 600 N")
+    whole = re.findall(r"(?<![\w.])(\d{2,6})(?![\w.])", seg)
+    whole = [int(w) for w in whole if not (20 <= int(w) <= 40 and len(w) == 2)]  # drop year-like 2-digit
+    return float(max(whole)) if whole else None
+
+
 ICD_RE = r"\b([A-TV-Z]\d{2}\.?[0-9A-Z]{1,4})\b"
 CPT_RE = r"\b(\d{5}|[A-V]\d{4}|U\d{3})\b"
 
@@ -111,6 +137,18 @@ _PATIENT_RE = re.compile(r"\b([A-Z][A-Z'\-]{1,24}),\s?([A-Z][A-Z'\-]{1,24})(?:[,
 
 def _valid_md(mm, dd):
     return 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31
+
+
+def _scan_dates(ln: str) -> list[str]:
+    """MM DD YY dates on a service line, tolerant of OCR spacing (02 27 25 or 022725)."""
+    dates, last_end = [], -1
+    for dm in re.finditer(r"(?=(?<!\d)(\d{2})\s*(\d{2})\s*(\d{2})(?!\d))", ln):
+        if dm.start() < last_end:
+            continue
+        if _valid_md(dm.group(1), dm.group(2)) and 20 <= int(dm.group(3)) <= 40:
+            dates.append(iso(*dm.groups()))
+            last_end = dm.start() + 6
+    return dates
 
 
 def parse_cms1500(text: str) -> dict:
@@ -155,23 +193,11 @@ def parse_cms1500(text: str) -> dict:
         mcpt = re.search(r"\b(\d{5}|[A-V]\d{4}|U\d{3})\b(?:\s+([A-Z0-9]{2}))?", ln)
         if not mcpt:
             continue
-        dates, last_end = [], -1
-        for dm in re.finditer(r"(?=(?<!\d)(\d{2})\s*(\d{2})\s*(\d{2})(?!\d))", ln):
-            if dm.start() < last_end:
-                continue
-            if _valid_md(dm.group(1), dm.group(2)) and 20 <= int(dm.group(3)) <= 40:
-                dates.append(iso(*dm.groups()))
-                last_end = dm.start() + 6
+        dates = _scan_dates(ln)
         if not dates:
             continue
         after = ln[mcpt.end():]
-        nums = re.findall(r"(?<![\w.])(\d{1,6}(?:[.:]\d{2})?)(?![\w])", after)
-        charge = None
-        for n in nums:
-            v = money(n)
-            if v is not None and v >= 1:
-                charge = v
-                break
+        charge = _trailing_charge(after)
         # modifiers like QZ P1 AB are tokens directly after the code - skip them
         out["lines"].append({
             "dos_from": dates[0], "dos_thru": dates[1] if len(dates) > 1 else dates[0],
@@ -255,27 +281,59 @@ def parse_ub04(text: str) -> dict:
         out["dos_from"] = iso(pm.group(1), pm.group(2), pm.group(3))
         out["dos_thru"] = iso(pm.group(4), pm.group(5), pm.group(6))
 
-    # revenue lines
-    for ln in lines:
-        mr = re.match(r"^\s*(0\d{3})\s+(.*?)\s+(\d{2})(\d{2})(\d{2})\s+(\d+)\s+(\d[\d,.]*)", ln)
-        if mr:
-            desc = mr.group(2)
-            cpt = None
-            mc = re.search(r"\b(\d{5})(?:[A-Z]{2})?\s*$", desc) or re.search(r"(\d{5})", desc)
-            if mc:
-                cpt = mc.group(1)
-                desc = desc[:mc.start()]
-            out["lines"].append({
-                "dos_from": iso(mr.group(3), mr.group(4), mr.group(5)),
-                "dos_thru": iso(mr.group(3), mr.group(4), mr.group(5)),
-                "cpt_code": cpt or mr.group(1),
-                "procedure_desc": re.sub(r"[^A-Za-z ()\-]", " ", desc).strip(),
-                "charge_amount": _ub_amount(mr.group(7)),
-            })
-    tot = re.search(r"TOTALS?\]?\s*(\d{3,}[.:]?\d{0,2})", text)
+    for raw in lines:
+        row = _parse_ub_revenue_line(raw)
+        if row:
+            out["lines"].append(row)
     if out["lines"]:
         out["total_charge"] = round(sum(l["charge_amount"] or 0 for l in out["lines"]), 2)
     return out
+
+
+def _parse_ub_revenue_line(raw: str) -> dict | None:
+    """Parse one UB-04 revenue line into fields, tolerant of both OCR engines.
+
+    Layout:  REVCODE  DESCRIPTION  CPT[MOD]  SERVDATE  UNITS  TOTALCHARGE
+    RapidOCR fuses the charge cents with no separator (16655 = 166.55);
+    Tesseract space-splits them (166 55). We take the last money-like token and,
+    when it is a bare 3-6 digit integer, read the final 2 digits as cents.
+    """
+    ln = re.sub(r"[|!?\"']", " ", raw)
+    if not re.match(r"\s*0\d{3}\s", ln):
+        return None
+    body = ln.strip()[4:]
+    # CPT/HCPCS, optionally with an attached 2-letter modifier (96375XU) or revenue-style U-code
+    mcpt = re.search(r"(?<!\d)(\d{5}|[A-V]\d{4})(?=[A-Z]{0,2}(?:\s|$))", body)
+    if not mcpt:
+        return None
+    cpt = mcpt.group(1)
+    dts = _scan_dates(ln)
+    tail = body[mcpt.end():]
+    tail = re.sub(r"\b\d{6}\b", " ", tail, count=1) if dts else tail   # drop the service date token
+    charge = _ub_charge(tail)
+    desc = re.sub(r"[^A-Za-z ()\-]", " ", body[:mcpt.start()]).strip()
+    return {
+        "dos_from": dts[0] if dts else None,
+        "dos_thru": dts[-1] if dts else None,
+        "cpt_code": cpt,
+        "procedure_desc": desc[:60] or None,
+        "charge_amount": charge,
+    }
+
+
+def _ub_charge(tail: str) -> float | None:
+    """Right-most charge on the part of a UB-04 line after the CPT+date."""
+    toks = re.findall(r"\d[\d.: ]*\d|\d", tail)
+    # explicit decimals first
+    for m in reversed(list(re.finditer(r"(\d{1,6})\s*[.:]\s*(\d{2})\b", tail))):
+        return float(f"{m.group(1)}.{m.group(2)}")
+    for m in reversed(list(re.finditer(r"(\d{1,6})\s+(\d{2})\b", tail))):   # Tesseract "166 55"
+        return float(f"{m.group(1)}.{m.group(2)}")
+    ints = [t for t in re.findall(r"(?<!\d)(\d{3,7})(?!\d)", tail)]          # RapidOCR "16655"
+    if ints:
+        v = ints[-1]
+        return round(int(v) / 100.0, 2)
+    return None
 
 
 # --------------------------------------------------------------------------
