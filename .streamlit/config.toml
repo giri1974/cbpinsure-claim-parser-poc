@@ -6,6 +6,9 @@ secondaryBackgroundColor = "#EEF3F9"
 textColor = "#1B2A41"
 font = "sans serif"
 
+[client]
+showSidebarNavigation = false
+
 [browser]
 gatherUsageStats = false
 

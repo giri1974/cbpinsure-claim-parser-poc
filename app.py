@@ -1,138 +1,44 @@
-"""Streamlit UI: ingest claim packages into SQL Server LocalDB, inspect and fix records.
+"""CBPInsure Claim Parser POC - main page.
 
 Run:  streamlit run app.py
+Tabs: Intake, Claims Review, Service Lines, Accumulator Check, Document Library.
+Clicking a Document ID or Case Name in the Document Library opens a dedicated
+viewer page (pages/document_viewer.py).
 """
 from __future__ import annotations
 
 import tempfile
 from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 
-from claimparser import db, ingest
-from claimparser import config
+from claimparser import db, ingest, ui
 from claimparser.config import DEFAULT_SAMPLES
 
-LOGO = Path(__file__).parent / "CBInsureLogo.png"
-st.set_page_config(page_title="Co-Ordinated Benefit Plans | Claims Intake", page_icon=str(LOGO) if LOGO.exists() else None,
-                   layout="wide")
+ui.page_setup("Claims Intake")
+ui.sidebar_controls()
+ui.header()
 
-st.markdown("""
-<style>
-:root { --brand:#0A5AA0; --brand-dark:#073B6B; --brand-light:#EEF3F9; --ink:#1B2A41; --line:#D5DEEA; }
-/* Use the full width: no max-width cap, tight side padding so content extends to the edge */
-.block-container { padding-top: 1.0rem; padding-left: 2.2rem; padding-right: 2.2rem; max-width: 100%; }
-[data-testid="stAppViewContainer"] { overflow-x: hidden; }
-h1, h2, h3, h4 { color: var(--brand-dark) !important; font-weight: 650; }
-.cbp-badge { display:inline-block; padding:2px 10px; border-radius:11px; font-size:.74rem; font-weight:700; }
-.cbp-badge.review { background:#FBE9D0; color:#9A5B00; }
-.cbp-badge.ok { background:#DCEFDD; color:#216B25; }
-.cbp-pagebar { display:flex; align-items:center; gap:10px; background:var(--brand-light);
-  border:1px solid var(--line); border-radius:8px; padding:6px 12px; margin-bottom:8px; }
-.cbp-header { display:flex; align-items:center; gap:22px; padding:14px 22px; margin-bottom:14px;
-  background:linear-gradient(90deg,#FFFFFF 0%,#EEF3F9 100%); border:1px solid var(--line);
-  border-left:6px solid var(--brand); border-radius:10px; }
-.cbp-header img { height:62px; }
-.cbp-title { font-size:1.45rem; font-weight:700; color:var(--brand-dark); line-height:1.2; }
-.cbp-sub { color:#51627C; font-size:.92rem; }
-.cbp-kpi { background:#FFFFFF; border:1px solid var(--line); border-top:4px solid var(--brand);
-  border-radius:8px; padding:10px 16px; }
-.cbp-kpi .n { font-size:1.7rem; font-weight:700; color:var(--brand-dark); }
-.cbp-kpi .l { font-size:.8rem; color:#51627C; text-transform:uppercase; letter-spacing:.04em; }
-.cbp-kpi.warn { border-top-color:#C77700; } .cbp-kpi.warn .n { color:#9A5B00; }
-.cbp-kpi.ok { border-top-color:#2E7D32; } .cbp-kpi.ok .n { color:#2E7D32; }
-.cbp-hint { background:var(--brand-light); border-left:4px solid var(--brand); padding:8px 14px;
-  border-radius:6px; color:var(--ink); font-size:.92rem; margin:4px 0 14px 0; }
-button[data-baseweb="tab"] { font-weight:600; padding:10px 18px; }
-button[data-baseweb="tab"][aria-selected="true"] { color:var(--brand) !important; }
-div[data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:8px; }
-.stButton > button[kind="primary"] { background:var(--brand); border:0; font-weight:600; }
-.stButton > button[kind="primary"]:hover { background:var(--brand-dark); }
-.cbp-footer { color:#7A8AA0; font-size:.78rem; text-align:center; margin-top:28px; }
-</style>
-""", unsafe_allow_html=True)
-
-
-def hint(text: str) -> None:
-    st.markdown(f'<div class="cbp-hint">{text}</div>', unsafe_allow_html=True)
-
-
-def kpi(col, label: str, value, kind: str = "") -> None:
-    col.markdown(f'<div class="cbp-kpi {kind}"><div class="n">{value}</div><div class="l">{label}</div></div>',
-                 unsafe_allow_html=True)
-
-
-# ---- database switch (Local SQL Server  <->  Cloud SQL Server) -----------------------------------
-import sys
-_opts = ["Cloud database", "Local database"]
-_default = 0 if config.mode() == "cloud" else 1
-with st.sidebar:
-    st.markdown("### Environment")
-    if sys.platform == "win32":
-        _choice = st.radio("Database", _opts, index=_default,
-                           help="Cloud = hosted SQL Server used for web deployment. Local = SQL Server LocalDB on this PC.")
-    else:
-        _choice = _opts[0]
-        st.info("Running on a hosted server: using the cloud database.")
-    config.set_mode("cloud" if _choice == _opts[0] else "local")
-    st.markdown("### OCR engine")
-    from claimparser.ocr import tesseract_available
-    _eng_opts = ["RapidOCR (recommended)", "Tesseract"]
-    _eng = st.radio("Engine", _eng_opts, index=0,
-                    help="RapidOCR scored better on the sample scans. Tesseract is optional and must be installed.")
-    if _eng == _eng_opts[1] and not tesseract_available():
-        st.warning("Tesseract is not installed. Run scripts/install_tesseract.ps1, then restart.")
-        config.set_engine("rapidocr")
-    else:
-        config.set_engine("tesseract" if _eng == _eng_opts[1] else "rapidocr")
-    if config.mode() == "cloud" and not config.cloud_configured():
-        st.warning("Cloud credentials are not configured. Add a [cloud] section to Streamlit secrets "
-                   "(see .streamlit/secrets.toml.example).")
-    st.caption(f"Server: `{config.server_label() or 'not set'}`")
-    st.caption(f"Database: `{config.database_name() or 'not set'}`")
-
-_ok, _msg = db.test_connection()
-if not _ok:
-    st.error(f"Cannot connect to the {config.mode()} database. {_msg}")
-    st.info("Check the network/VPN, the server name and port, and that your IP is allowed by the database host. "
-            "You can switch databases in the sidebar.")
-    st.stop()
-db.init_db()
-with st.sidebar:
-    st.success("Connected", icon=":material/check_circle:")
-DB_NAME = config.database_name()
-_server = config.server_label()
-
-import base64
-logo_html = ""
-if LOGO.exists():
-    logo_html = f'<img src="data:image/png;base64,{base64.b64encode(LOGO.read_bytes()).decode()}" alt="Co-Ordinated Benefit Plans">'
-st.markdown(f"""
-<div class="cbp-header">{logo_html}
-  <div><div class="cbp-title">Claims Intake &amp; Document Extraction</div>
-  <div class="cbp-sub">Proof of concept &nbsp;|&nbsp; {config.mode().title()} database: <b>{DB_NAME}</b> on {_server}</div></div>
-</div>""", unsafe_allow_html=True)
-
+# ---- KPI strip -----------------------------------------------------------------------------------
 _k = db.query_df("""SELECT (SELECT COUNT(*) FROM dbo.claims) AS claims,
                            (SELECT COUNT(*) FROM dbo.claims WHERE needs_review = 1) AS review,
                            (SELECT COUNT(*) FROM dbo.claim_line_items) AS lines,
                            (SELECT COUNT(*) FROM dbo.source_documents) AS docs,
                            (SELECT COUNT(*) FROM dbo.document_pages) AS pages""").iloc[0]
 k1, k2, k3, k4, k5 = st.columns(5)
-kpi(k1, "Claims", int(_k["claims"]))
-kpi(k2, "Need review", int(_k["review"]), "warn" if _k["review"] else "ok")
-kpi(k3, "Service lines", int(_k["lines"]))
-kpi(k4, "Documents", int(_k["docs"]))
-kpi(k5, "Indexed pages", int(_k["pages"]))
+ui.kpi(k1, "Claims", int(_k["claims"]))
+ui.kpi(k2, "Need review", int(_k["review"]), "warn" if _k["review"] else "ok")
+ui.kpi(k3, "Service lines", int(_k["lines"]))
+ui.kpi(k4, "Documents", int(_k["docs"]))
+ui.kpi(k5, "Indexed pages", int(_k["pages"]))
 st.write("")
 
 tab_ing, tab_claims, tab_lines, tab_val, tab_docs = st.tabs(
     ["Intake", "Claims Review", "Service Lines", "Accumulator Check", "Document Library"])
 
-# ------------------------------------------------------------------ ingest
+# ------------------------------------------------------------------ intake
 with tab_ing:
-    hint("Load a claim package folder. Scanned bills are read with OCR and stored against a Document ID.")
+    ui.hint("Load a claim package folder. Scanned bills are read with OCR and stored against a Document ID.")
     st.subheader("Process claim folder")
     folder = st.text_input("Folder with case sub-folders", str(DEFAULT_SAMPLES))
     if not Path(folder).exists():
@@ -163,7 +69,8 @@ with tab_ing:
 
 # ------------------------------------------------------------------ claims
 with tab_claims:
-    hint("Claims flagged <b>Needs review</b> are missing items such as activity code or date of loss. Pick a claim to complete it.")
+    ui.hint("Claims flagged <b>Needs review</b> are missing items such as activity code or date of loss. "
+            "Pick a claim to complete it.")
     claims = db.query_df("SELECT * FROM dbo.claims ORDER BY case_name, claim_number")
     if claims.empty:
         st.info("No claims yet. Load a claim folder on the Intake tab.")
@@ -213,8 +120,8 @@ with tab_claims:
         else:
             cn = st.selectbox("Claim", list(labels), format_func=lambda c: labels[c])
             cur = claims[claims["claim_number"] == cn].iloc[0]
-            badge = ("review", "Needs review") if cur["needs_review"] else ("ok", "Reviewed")
-            st.markdown(f'<span class="cbp-badge {badge[0]}">{badge[1]}</span>', unsafe_allow_html=True)
+            b = ("review", "Needs review") if cur["needs_review"] else ("ok", "Reviewed")
+            st.markdown(ui.badge(*b), unsafe_allow_html=True)
             if cur["review_notes"]:
                 st.caption(f"Flagged because: {cur['review_notes']}")
             with st.form("edit_claim"):
@@ -235,7 +142,7 @@ with tab_claims:
 
 # ------------------------------------------------------------------ lines
 with tab_lines:
-    hint("Procedure-level detail extracted from each bill (CPT/HCPCS, dates of service, charges).")
+    ui.hint("Procedure-level detail extracted from each bill (CPT/HCPCS, dates of service, charges).")
     li = db.query_df("""SELECT claim_number, bill_file, line_no, dos_from, dos_thru, cpt_code,
                         procedure_desc, provider_tin, provider_name, charge_amount, allowed_amount,
                         paid_amount FROM dbo.claim_line_items ORDER BY claim_number, bill_file, line_no""")
@@ -265,7 +172,7 @@ with tab_lines:
 
 # ------------------------------------------------------------------ validation
 with tab_val:
-    hint("Compares extracted service lines with the client claims-accumulator spreadsheet, where one was provided.")
+    ui.hint("Compares extracted service lines with the client claims-accumulator spreadsheet, where one was provided.")
     val = db.query_df("""
         SELECT a.claim_no, a.line_number, a.procedure_code AS acc_cpt, a.total_charges AS acc_charges,
                l.cpt_code AS parsed_cpt, l.charge_amount AS parsed_charges,
@@ -298,9 +205,10 @@ with tab_val:
         st.caption("Facility bills (UB-04) use revenue/CPT codes that differ from the accumulator's "
                    "adjudicated procedure codes, so some lines show as differing even when the extraction is correct.")
 
-# ------------------------------------------------------------------ docs
+# ------------------------------------------------------------------ document library
 with tab_docs:
-    hint("Every scanned document is indexed by Document ID. Search the text of all pages or open a document to see the original page beside its extracted text.")
+    ui.hint("Every scanned document is indexed by Document ID. Search page text, or click a row and "
+            "<b>Open in viewer</b> to see the original pages beside the extracted text on a dedicated page.")
     q = st.text_input("Search all OCR / extracted text (e.g. a claim no., name, CPT, TIN)")
     if q:
         hits = db.query_df("""
@@ -319,73 +227,32 @@ with tab_docs:
             })
 
     docs = db.query_df("""SELECT doc_id, case_name, claim_number, file_name, doc_types, page_count,
-                          extract_method, processed_at FROM dbo.source_documents ORDER BY doc_id""")
+                          extract_method FROM dbo.source_documents ORDER BY doc_id""")
     if docs.empty:
         st.info("No documents yet. Load a claim folder on the Intake tab.")
     else:
-        st.dataframe(
+        st.markdown("##### Click a document to open the viewer")
+        # Row-selectable table: selecting a row navigates to the dedicated viewer page.
+        event = st.dataframe(
             docs, use_container_width=True, hide_index=True,
+            on_select="rerun", selection_mode="single-row",
             column_config={
                 "doc_id": st.column_config.NumberColumn("Doc ID", width="small"),
                 "case_name": "Case", "claim_number": st.column_config.TextColumn("Claim #", width="small"),
                 "file_name": "File", "doc_types": "Detected types",
                 "page_count": st.column_config.NumberColumn("Pages", width="small"),
                 "extract_method": "Method",
-                "processed_at": st.column_config.DatetimeColumn("Processed"),
             })
+        sel = event.selection.rows if event and event.selection else []
+        if sel:
+            ui.open_document(int(docs.iloc[sel[0]]["doc_id"]))
 
-        st.divider()
-        st.subheader("Document viewer")
+        st.write("")
+        c1, c2 = st.columns([2, 5])
         dlabels = {int(r["doc_id"]): f'#{int(r["doc_id"])}  -  {r["file_name"]}  ({r["case_name"]})'
                    for _, r in docs.iterrows()}
-        did = int(st.selectbox("Open Document ID", list(dlabels), format_func=lambda d: dlabels[d]))
-        meta = db.query_df("SELECT file_path, parsed_json FROM dbo.source_documents WHERE doc_id=?", (did,)).iloc[0]
-        pages = db.query_df(
-            "SELECT page_no, page_type, page_text FROM dbo.document_pages WHERE doc_id=? ORDER BY page_no", (did,))
+        pick_doc = c1.selectbox("or pick a Document ID", list(dlabels), format_func=lambda d: dlabels[d])
+        if c2.button("Open in viewer  ↗", type="primary"):
+            ui.open_document(int(pick_doc))
 
-        with st.expander("Parsed fields (JSON)"):
-            st.json(meta["parsed_json"])
-
-        if pages.empty:
-            st.info("This document has no indexed pages (e.g. a spreadsheet).")
-        else:
-            n = len(pages)
-            key = f"docpage_{did}"
-            if key not in st.session_state or st.session_state[key] >= n:
-                st.session_state[key] = 0
-
-            bar = st.container()
-            bc1, bc2, bc3, bc4 = bar.columns([1, 1, 4, 3])
-            if bc1.button("◀ Prev", disabled=st.session_state[key] == 0, use_container_width=True):
-                st.session_state[key] -= 1
-                st.rerun()
-            if bc2.button("Next ▶", disabled=st.session_state[key] >= n - 1, use_container_width=True):
-                st.session_state[key] += 1
-                st.rerun()
-            jump = bc3.select_slider("Page", options=list(range(1, n + 1)),
-                                     value=st.session_state[key] + 1) if n > 1 else 1
-            if jump - 1 != st.session_state[key]:
-                st.session_state[key] = jump - 1
-                st.rerun()
-            idx = st.session_state[key]
-            pg = pages.iloc[idx]
-            bc4.markdown(f'Page **{idx + 1}** of **{n}** &nbsp; '
-                         f'<span class="cbp-badge ok">{pg["page_type"]}</span>', unsafe_allow_html=True)
-            st.caption(f"Source file: `{meta['file_path']}`")
-
-            img_col, txt_col = st.columns([1, 1], gap="medium")
-            with img_col:
-                st.markdown("**Original page**")
-                try:
-                    import pymupdf
-                    pdf = pymupdf.open(meta["file_path"])
-                    st.image(pdf[int(pg["page_no"]) - 1].get_pixmap(dpi=110).tobytes("png"),
-                             use_container_width=True)
-                except Exception:
-                    st.info("Original page image unavailable (file not on this machine).")
-            with txt_col:
-                st.markdown("**Extracted / OCR text**")
-                st.text_area("page text", pg["page_text"] or "(no text)", height=560,
-                             label_visibility="collapsed")
-
-st.markdown('<div class="cbp-footer">Co-Ordinated Benefit Plans, a subsidiary of ONE80 Intermediaries &nbsp;|&nbsp; POC build for demonstration</div>', unsafe_allow_html=True)
+ui.footer()
