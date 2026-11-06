@@ -300,6 +300,50 @@ def initials(name) -> str:
     return (parts[0][0] + (parts[-1][0] if len(parts) > 1 else "")).upper()
 
 
+_THUMB_DIR = ROOT / "ocr_cache" / "thumbs"
+
+
+def page_thumb(file_path: str, doc_id: int, width: int = 54) -> str:
+    """Return an <img> data-URI of the first page, cached on disk. Falls back to an icon."""
+    try:
+        _THUMB_DIR.mkdir(parents=True, exist_ok=True)
+        cache = _THUMB_DIR / f"{doc_id}.png"
+        if not cache.exists():
+            p = Path(file_path)
+            if p.suffix.lower() != ".pdf" or not p.exists():
+                return '<span style="font-size:1.1rem;">&#128202;</span>'
+            import pymupdf
+            doc = pymupdf.open(p)
+            doc[0].get_pixmap(dpi=36).save(str(cache))
+        b64 = base64.b64encode(cache.read_bytes()).decode()
+        return (f'<img src="data:image/png;base64,{b64}" '
+                f'style="width:{width}px;border:1px solid var(--line);border-radius:4px;">')
+    except Exception:
+        return '<span style="font-size:1.1rem;">&#128462;</span>'
+
+
+def type_chips(doc_types: str | None, limit: int = 2) -> str:
+    if not doc_types:
+        return ""
+    parts = [t.strip() for t in str(doc_types).split(",") if t.strip() and t.strip() != "instructions"]
+    shown = parts[:limit]
+    extra = len(parts) - len(shown)
+    html_ = "".join(chip(t.upper() if t in ("eob", "ub04") else t.replace("_", " ").title(), "chip-type")
+                    for t in shown)
+    if extra > 0:
+        html_ += chip(f"+{extra}", "chip-dim")
+    return html_
+
+
+def method_chip(method: str | None) -> str:
+    m = (method or "").lower()
+    if m == "text":
+        return chip("● Text", "chip-ok")
+    if m in ("ocr", "mixed"):
+        return chip("● OCR", "chip-type")
+    return chip(method or "—", "chip-dim")
+
+
 def html_table(headers: list[str], rows_html: list[str], aligns: list[str] | None = None) -> str:
     aligns = aligns or [""] * len(headers)
     th = "".join(f'<th class="{"cbp-num" if a == "r" else ""}">{html.escape(h)}</th>'

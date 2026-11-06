@@ -373,52 +373,95 @@ with tab_val:
 
 # ------------------------------------------------------------------ document library
 with tab_docs:
-    ui.hint("Every scanned document is indexed by Document ID. Search page text, or click a row and "
-            "<b>Open in viewer</b> to see the original pages beside the extracted text on a dedicated page.")
-    q = st.text_input("Search all OCR / extracted text (e.g. a claim no., name, CPT, TIN)")
-    if q:
-        hits = db.query_df("""
-            SELECT d.doc_id, d.case_name, d.file_name, p.page_no, p.page_type,
-                   SUBSTRING(p.page_text, CASE WHEN CHARINDEX(?, p.page_text) > 60 THEN CHARINDEX(?, p.page_text) - 60 ELSE 1 END, 160) AS snippet
-            FROM dbo.document_pages p JOIN dbo.source_documents d ON d.doc_id = p.doc_id
-            WHERE p.page_text LIKE ? ORDER BY d.doc_id, p.page_no""", (q, q, f"%{q}%"))
-        st.caption(f"{len(hits)} matching page(s)")
-        st.dataframe(
-            hits, use_container_width=True, hide_index=True,
-            column_config={
-                "doc_id": st.column_config.NumberColumn("Doc ID", width="small"),
-                "case_name": "Case", "file_name": "File",
-                "page_no": st.column_config.NumberColumn("Page", width="small"),
-                "page_type": "Type", "snippet": st.column_config.TextColumn("Match", width="large"),
-            })
-
-    docs = db.query_df("""SELECT doc_id, case_name, claim_number, file_name, doc_types, page_count,
-                          extract_method FROM dbo.source_documents ORDER BY doc_id""")
+    ui.page_title("Document Library",
+                  "Every scanned document is indexed by Document ID. Search the extracted text or open a "
+                  "document to see the original pages beside the extracted data.")
+    docs = db.query_df("""SELECT doc_id, case_name, claim_number, file_name, file_path, doc_types,
+                          page_count, extract_method FROM dbo.source_documents ORDER BY doc_id""")
     if docs.empty:
         st.info("No documents yet. Load a claim folder on the Intake tab.")
     else:
-        st.markdown("##### Click a document to open the viewer")
-        # Row-selectable table: selecting a row navigates to the dedicated viewer page.
-        event = st.dataframe(
-            docs, use_container_width=True, hide_index=True,
-            on_select="rerun", selection_mode="single-row",
-            column_config={
-                "doc_id": st.column_config.NumberColumn("Doc ID", width="small"),
-                "case_name": "Case", "claim_number": st.column_config.TextColumn("Claim #", width="small"),
-                "file_name": "File", "doc_types": "Detected types",
-                "page_count": st.column_config.NumberColumn("Pages", width="small"),
-                "extract_method": "Method",
-            })
-        sel = event.selection.rows if event and event.selection else []
-        if sel:
-            ui.open_document(int(docs.iloc[sel[0]]["doc_id"]))
+        with st.container(border=True):
+            srow = st.columns([6, 1])
+            q = srow[0].text_input("docsearch", placeholder="Search all OCR / extracted text — claim #, name, CPT, TIN...",
+                                   label_visibility="collapsed")
+            show_filters = srow[1].toggle("Filters", value=False)
+            all_types = sorted({t.strip() for dt in docs["doc_types"].dropna() for t in str(dt).split(",")
+                                if t.strip() and t.strip() != "instructions"})
+            type_pick, method_pick = "All types", "All methods"
+            if show_filters:
+                fr = st.columns([2, 2, 6])
+                type_pick = fr[0].selectbox("Document type", ["All types"] + all_types)
+                method_pick = fr[1].selectbox("Extraction method", ["All methods", "text", "ocr", "mixed"])
 
-        st.write("")
-        c1, c2 = st.columns([2, 5])
-        dlabels = {int(r["doc_id"]): f'#{int(r["doc_id"])}  -  {r["file_name"]}  ({r["case_name"]})'
-                   for _, r in docs.iterrows()}
-        pick_doc = c1.selectbox("or pick a Document ID", list(dlabels), format_func=lambda d: dlabels[d])
-        if c2.button("Open in viewer  ↗", type="primary"):
-            ui.open_document(int(pick_doc))
+        # text search across pages
+        if q:
+            hits = db.query_df("""
+                SELECT d.doc_id, d.case_name, d.file_name, p.page_no, p.page_type,
+                       SUBSTRING(p.page_text, CASE WHEN CHARINDEX(?, p.page_text) > 60 THEN CHARINDEX(?, p.page_text)-60 ELSE 1 END, 160) AS snippet
+                FROM dbo.document_pages p JOIN dbo.source_documents d ON d.doc_id = p.doc_id
+                WHERE p.page_text LIKE ? ORDER BY d.doc_id, p.page_no""", (q, q, f"%{q}%"))
+            st.markdown(f'<div class="cbp-info">{len(hits)} matching page(s) for "<b>{html_escape(q)}</b>"</div>',
+                        unsafe_allow_html=True)
+            if not hits.empty:
+                hrows = [f'<tr><td><b>#{int(r["doc_id"])}</b></td><td>{html_escape(r["case_name"] or "")}</td>'
+                         f'<td>{html_escape(r["file_name"])}</td><td>p{int(r["page_no"])}</td>'
+                         f'<td>{ui.chip(r["page_type"], "chip-type")}</td>'
+                         f'<td style="color:var(--mute);">…{html_escape(str(r["snippet"]).strip())}…</td></tr>'
+                         for _, r in hits.iterrows()]
+                st.markdown(ui.html_table(["Doc ID", "Case", "File", "Page", "Type", "Match"], hrows),
+                            unsafe_allow_html=True)
+
+        dv = docs.copy()
+        if type_pick != "All types":
+            dv = dv[dv["doc_types"].fillna("").str.contains(type_pick)]
+        if method_pick != "All methods":
+            dv = dv[dv["extract_method"] == method_pick]
+
+        tv1, tv2 = st.columns([6, 1])
+        tv1.markdown(f'<div style="color:var(--mute);padding-top:6px;">{len(dv)} documents</div>',
+                     unsafe_allow_html=True)
+        view_mode = tv2.radio("view", ["List", "Grid"], horizontal=True, label_visibility="collapsed")
+
+        if view_mode == "List":
+            rows = []
+            for _, r in dv.iterrows():
+                rows.append(
+                    "<tr>"
+                    f'<td>{ui.page_thumb(r["file_path"], int(r["doc_id"]))}</td>'
+                    f'<td><b>#{int(r["doc_id"])}</b></td>'
+                    f'<td>{html_escape(r["case_name"] or "—")}</td>'
+                    f'<td>{ui.text_or_missing(r["claim_number"])}</td>'
+                    f'<td>&#128462; {html_escape(r["file_name"])}</td>'
+                    f'<td>{ui.type_chips(r["doc_types"])}</td>'
+                    f'<td>{int(r["page_count"]) if r["page_count"] and r["page_count"] == r["page_count"] else "—"}</td>'
+                    f'<td>{ui.method_chip(r["extract_method"])}</td>'
+                    "</tr>")
+            st.markdown(ui.html_table(
+                ["Preview", "Doc ID", "Case", "Claim #", "File name", "Detected types", "Pages", "Method"], rows),
+                unsafe_allow_html=True)
+        else:
+            cols = st.columns(4)
+            for i, (_, r) in enumerate(dv.iterrows()):
+                with cols[i % 4]:
+                    st.markdown(
+                        f'<div class="cbp-card" style="text-align:center;padding:12px;">'
+                        f'{ui.page_thumb(r["file_path"], int(r["doc_id"]), width=120)}'
+                        f'<div style="margin-top:8px;font-weight:700;">#{int(r["doc_id"])}</div>'
+                        f'<div style="font-size:.78rem;color:var(--mute);">{html_escape(r["file_name"])}</div>'
+                        f'<div style="margin-top:6px;">{ui.type_chips(r["doc_types"])}</div></div>',
+                        unsafe_allow_html=True)
+
+        # open-in-viewer (styled HTML tables can't capture clicks, so a compact picker drives navigation)
+        st.divider()
+        o1, o2 = st.columns([3, 1])
+        dlabels = {int(r["doc_id"]): f'#{int(r["doc_id"])} — {r["file_name"]} ({r["case_name"]})'
+                   for _, r in dv.iterrows()}
+        if dlabels:
+            pick_doc = o1.selectbox("Open a document in the viewer", list(dlabels),
+                                    format_func=lambda d: dlabels[d])
+            o2.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if o2.button("Open in viewer  ↗", type="primary", use_container_width=True):
+                ui.open_document(int(pick_doc))
 
 ui.footer()

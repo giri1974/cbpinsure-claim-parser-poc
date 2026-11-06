@@ -11,8 +11,7 @@ import streamlit as st
 from claimparser import db, ui
 
 ui.page_setup("Document Viewer")
-ui.sidebar_controls()
-ui.header()
+ui.topbar()
 
 # ---- resolve which document to show ---------------------------------------------------------------
 docs = db.query_df("""SELECT doc_id, case_name, claim_number, file_name, doc_types, page_count,
