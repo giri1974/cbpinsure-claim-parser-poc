@@ -264,3 +264,44 @@ def footer() -> None:
 def open_document(doc_id: int) -> None:
     st.query_params["doc"] = str(int(doc_id))
     st.switch_page("pages/document_viewer.py")
+
+
+# ----- value formatting for styled HTML tables ----------------------------------------------------
+def money(v, missing_chip: bool = False) -> str:
+    if v is None or (isinstance(v, float) and v != v):
+        return chip("Missing", "chip-miss") if missing_chip else '<span style="color:#B6C0CE;">—</span>'
+    return f"${float(v):,.2f}"
+
+
+def text_or_missing(v) -> str:
+    if v is None or str(v).strip() == "" or str(v).lower() == "none":
+        return chip("Missing", "chip-miss")
+    return html.escape(str(v))
+
+
+def date_or_missing(v) -> str:
+    if v is None or str(v).strip() in ("", "NaT", "None"):
+        return chip("Missing", "chip-miss")
+    try:
+        import pandas as pd
+        return pd.to_datetime(v).strftime("%b %-d, %Y")
+    except Exception:
+        try:
+            import pandas as pd
+            return pd.to_datetime(v).strftime("%b %d, %Y").replace(" 0", " ")
+        except Exception:
+            return html.escape(str(v))
+
+
+def initials(name) -> str:
+    if not name:
+        return "?"
+    parts = [p for p in str(name).replace(",", " ").split() if p]
+    return (parts[0][0] + (parts[-1][0] if len(parts) > 1 else "")).upper()
+
+
+def html_table(headers: list[str], rows_html: list[str], aligns: list[str] | None = None) -> str:
+    aligns = aligns or [""] * len(headers)
+    th = "".join(f'<th class="{"cbp-num" if a == "r" else ""}">{html.escape(h)}</th>'
+                 for h, a in zip(headers, aligns))
+    return f'<table class="cbp-tbl"><thead><tr>{th}</tr></thead><tbody>{"".join(rows_html)}</tbody></table>'

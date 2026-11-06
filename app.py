@@ -108,52 +108,77 @@ with tab_ing:
 
 # ------------------------------------------------------------------ claims
 with tab_claims:
-    ui.hint("Claims flagged <b>Needs review</b> are missing items such as activity code or date of loss. "
-            "Pick a claim to complete it.")
+    th1, th2 = st.columns([6, 1])
+    with th1:
+        ui.page_title("Claims Review",
+                      "Claims flagged <b>Needs review</b> are missing details such as activity code or date of loss. "
+                      "Select a claim to complete it.")
     claims = db.query_df("SELECT * FROM dbo.claims ORDER BY case_name, claim_number")
     if claims.empty:
         st.info("No claims yet. Load a claim folder on the Intake tab.")
     else:
-        fc1, fc2 = st.columns([2, 3])
-        cases = ["All cases"] + sorted(claims["case_name"].dropna().unique().tolist())
-        pick_case = fc1.selectbox("Filter by case", cases)
-        only_review = fc2.toggle("Show only claims that need review", value=False)
-        view = claims.copy()
-        if pick_case != "All cases":
-            view = view[view["case_name"] == pick_case]
-        if only_review:
-            view = view[view["needs_review"] == True]
-        view = view.assign(Status=view["needs_review"].map(lambda r: "Needs review" if r else "Reviewed"))
-        show_cols = ["Status", "claim_number", "case_name", "claimant_name", "date_of_service_from",
-                     "date_of_service_thru", "diagnosis_code", "activity_code", "provider_tin",
-                     "provider_name", "total_charges", "total_cob_allowable", "total_primary_paid",
-                     "deductible_amount", "copay_amount", "review_notes"]
-        st.dataframe(
-            view[show_cols], use_container_width=True, hide_index=True,
-            column_config={
-                "Status": st.column_config.TextColumn("Status", width="small"),
-                "claim_number": st.column_config.TextColumn("Claim #", width="small"),
-                "case_name": st.column_config.TextColumn("Case"),
-                "claimant_name": "Claimant",
-                "date_of_service_from": st.column_config.DateColumn("DOS from"),
-                "date_of_service_thru": st.column_config.DateColumn("DOS thru"),
-                "diagnosis_code": "Dx", "activity_code": "Activity", "provider_tin": "TIN",
-                "provider_name": "Provider",
-                "total_charges": st.column_config.NumberColumn("Charges", format="$%.2f"),
-                "total_cob_allowable": st.column_config.NumberColumn("COB allowable", format="$%.2f"),
-                "total_primary_paid": st.column_config.NumberColumn("Primary paid", format="$%.2f"),
-                "deductible_amount": st.column_config.NumberColumn("Deductible", format="$%.2f"),
-                "copay_amount": st.column_config.NumberColumn("Copay", format="$%.2f"),
-                "review_notes": st.column_config.TextColumn("Review notes", width="large"),
-            })
-        st.download_button("Download claims (CSV)", claims.to_csv(index=False).encode(),
-                           "claims.csv", "text/csv")
+        th2.download_button("⤓ Download CSV", claims.to_csv(index=False).encode(),
+                            "claims.csv", "text/csv", use_container_width=True)
+        with st.container(border=True):
+            f1, f2, f3 = st.columns([2, 3, 3])
+            cases = ["All cases"] + sorted(claims["case_name"].dropna().unique().tolist())
+            pick_case = f1.selectbox("Case", cases, label_visibility="collapsed")
+            n_review = int((claims["needs_review"] == True).sum())
+            seg = f2.radio("filter", ["All", f"Needs review ({n_review})", "Complete"],
+                           horizontal=True, label_visibility="collapsed")
+            search = f3.text_input("search", placeholder="Search claim #, claimant, provider...",
+                                   label_visibility="collapsed")
 
-        st.divider()
+            view = claims.copy()
+            if pick_case != "All cases":
+                view = view[view["case_name"] == pick_case]
+            if seg.startswith("Needs review"):
+                view = view[view["needs_review"] == True]
+            elif seg == "Complete":
+                view = view[view["needs_review"] == False]
+            if search:
+                s = search.lower()
+                mask = view.apply(lambda r: s in " ".join(
+                    str(r[c]).lower() for c in ["claim_number", "claimant_name", "provider_name", "case_name"]), axis=1)
+                view = view[mask]
+
+            nr = int((view["needs_review"] == True).sum())
+            st.markdown(f'<div style="margin:2px 0 6px;">{ui.chip("•", "chip-review")} '
+                        f'<b>Needs review ({nr})</b></div>', unsafe_allow_html=True)
+
+            rows = []
+            for _, r in view.iterrows():
+                status = ui.chip("● Needs review", "chip-review") if r["needs_review"] else ui.chip("● Complete", "chip-ok")
+                rows.append(
+                    "<tr>"
+                    f'<td>{status}</td>'
+                    f'<td><b>{r["claim_number"]}</b></td>'
+                    f'<td style="color:var(--mute);">{r["case_name"] or "—"}</td>'
+                    f'<td><span class="cbp-ava" style="width:22px;height:22px;font-size:.62rem;display:inline-flex;'
+                    f'margin-right:6px;vertical-align:middle;">{ui.initials(r["claimant_name"])}</span>'
+                    f'{ui.text_or_missing(r["claimant_name"])}</td>'
+                    f'<td>{ui.date_or_missing(r["date_of_service_from"])}</td>'
+                    f'<td>{ui.date_or_missing(r["date_of_service_thru"])}</td>'
+                    f'<td>{ui.text_or_missing(r["diagnosis_code"])}</td>'
+                    f'<td>{ui.text_or_missing(r["activity_code"])}</td>'
+                    f'<td>{ui.text_or_missing(r["provider_tin"])}</td>'
+                    f'<td>{ui.text_or_missing(r["provider_name"])}</td>'
+                    f'<td class="cbp-num">{ui.money(r["total_charges"])}</td>'
+                    f'<td class="cbp-num">{ui.money(r["total_cob_allowable"])}</td>'
+                    f'<td class="cbp-num">{ui.money(r["total_primary_paid"])}</td>'
+                    "</tr>")
+            headers = ["Status", "Claim #", "Case", "Claimant", "DOS from", "DOS thru", "Dx", "Activity",
+                       "TIN", "Provider", "Charges", "COB allowable", "Primary paid"]
+            aligns = [""] * 10 + ["r", "r", "r"]
+            st.markdown(f'<div style="overflow-x:auto;">{ui.html_table(headers, rows, aligns)}</div>',
+                        unsafe_allow_html=True)
+            st.caption(f"Showing {len(view)} of {len(claims)} claims")
+
         st.subheader("Complete missing claim details")
+        view_full = view
         labels = {r["claim_number"]: f'{r["claim_number"]}  -  {r["claimant_name"] or "?"}'
                   f'  ({"needs review" if r["needs_review"] else "reviewed"})'
-                  for _, r in view.iterrows()} if not view.empty else {}
+                  for _, r in view_full.iterrows()} if not view_full.empty else {}
         if not labels:
             st.info("No claims match the current filter.")
         else:
