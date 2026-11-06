@@ -16,56 +16,95 @@ from claimparser import db, ingest, ui
 from claimparser.config import DEFAULT_SAMPLES
 
 ui.page_setup("Claims Intake")
-ui.sidebar_controls()
-ui.header()
+ui.topbar()
 
 # ---- KPI strip -----------------------------------------------------------------------------------
-_k = db.query_df("""SELECT (SELECT COUNT(*) FROM dbo.claims) AS claims,
-                           (SELECT COUNT(*) FROM dbo.claims WHERE needs_review = 1) AS review,
+_k = db.query_df("""SELECT (SELECT COUNT(*) FROM dbo.claims WHERE needs_review = 1) AS review,
                            (SELECT COUNT(*) FROM dbo.claim_line_items) AS lines,
                            (SELECT COUNT(*) FROM dbo.source_documents) AS docs,
                            (SELECT COUNT(*) FROM dbo.document_pages) AS pages""").iloc[0]
-k1, k2, k3, k4, k5 = st.columns(5)
-ui.kpi(k1, "Claims", int(_k["claims"]))
-ui.kpi(k2, "Need review", int(_k["review"]), "warn" if _k["review"] else "ok")
-ui.kpi(k3, "Service lines", int(_k["lines"]))
-ui.kpi(k4, "Documents", int(_k["docs"]))
-ui.kpi(k5, "Indexed pages", int(_k["pages"]))
-st.write("")
+_review = int(_k["review"])
+ui.kpi_row(_review, int(_k["lines"]), int(_k["docs"]), int(_k["pages"]))
 
 tab_ing, tab_claims, tab_lines, tab_val, tab_docs = st.tabs(
-    ["Intake", "Claims Review", "Service Lines", "Accumulator Check", "Document Library"])
+    [":material/upload: Intake",
+     f":material/fact_check: Claims Review  ({_review})" if _review else ":material/fact_check: Claims Review",
+     ":material/table_rows: Service Lines",
+     ":material/verified: Accumulator Check",
+     ":material/folder_open: Document Library"])
 
 # ------------------------------------------------------------------ intake
 with tab_ing:
-    ui.hint("Load a claim package folder. Scanned bills are read with OCR and stored against a Document ID.")
-    st.subheader("Process claim folder")
-    folder = st.text_input("Folder with case sub-folders", str(DEFAULT_SAMPLES))
-    if not Path(folder).exists():
-        st.warning("This folder is not available on this server. Use the upload option below.")
-    reset = st.checkbox("Clear existing data first", value=False)
-    if st.button("Parse folder and load to SQL Server", type="primary", disabled=not Path(folder).exists()):
-        log = st.empty()
-        lines: list[str] = []
+    ui.page_title("Intake", "Load a claim package. Scanned bills are read with OCR and stored against a Document ID.",
+                  secure=True)
+    lc, rc = st.columns(2, gap="medium")
+    with lc:
+        with st.container(border=True):
+            st.markdown("####  Process claim folder")
+            folder = st.text_input("Folder with case sub-folders", str(DEFAULT_SAMPLES))
+            if not Path(folder).exists():
+                st.warning("This folder is not available on this server. Use the upload option on the right.")
+            reset = st.checkbox("Clear existing data before loading", value=False,
+                                help="This replaces all previously indexed claim data.")
+            if reset:
+                st.markdown('<span style="color:#D64550;font-size:.8rem;">'
+                            'This replaces all previously indexed claim data.</span>', unsafe_allow_html=True)
+            if st.button("▶  Parse & load folder", type="primary", disabled=not Path(folder).exists()):
+                log = st.empty()
+                lines: list[str] = []
 
-        def progress(msg: str) -> None:
-            lines.append(msg)
-            log.code("\n".join(lines[-25:]))
+                def progress(msg: str) -> None:
+                    lines.append(msg)
+                    log.code("\n".join(lines[-25:]))
 
-        with st.spinner("Parsing (scanned PDFs are OCR'd, first run is slow; results are cached)..."):
-            summary = ingest.ingest_root(Path(folder), progress, reset=reset)
-        st.success(f"Loaded: {summary}")
+                with st.spinner("Parsing (scanned PDFs are OCR'd, first run is slow; results are cached)..."):
+                    summary = ingest.ingest_root(Path(folder), progress, reset=reset)
+                st.success(f"Loaded: {summary}")
+                st.rerun()
+    with rc:
+        with st.container(border=True):
+            st.markdown("####  Upload a document")
+            up = st.file_uploader("PDF, XLS, XLSX or ZIP of a case folder - up to 200 MB",
+                                  type=["pdf", "xls", "xlsx", "zip"])
+            if up and st.button("Parse uploaded file", type="primary"):
+                tmp = Path(tempfile.mkdtemp(prefix="claims_"))
+                p = tmp / up.name
+                p.write_bytes(up.getbuffer())
+                with st.spinner("Parsing..."):
+                    summary = ingest.ingest_upload(p, tmp / "work", st.write)
+                st.success(f"Loaded: {summary}")
+                st.rerun()
 
-    st.divider()
-    st.subheader("Upload a document")
-    up = st.file_uploader("PDF, XLS/XLSX, or ZIP of a case folder", type=["pdf", "xls", "xlsx", "zip"])
-    if up and st.button("Parse uploaded file"):
-        tmp = Path(tempfile.mkdtemp(prefix="claims_"))
-        p = tmp / up.name
-        p.write_bytes(up.getbuffer())
-        with st.spinner("Parsing..."):
-            summary = ingest.ingest_upload(p, tmp / "work", st.write)
-        st.success(f"Loaded: {summary}")
+    # ---- Recent activity (real data from source_documents) ----
+    act = db.query_df("""
+        SELECT d.case_name,
+               COUNT(*) AS docs,
+               SUM(COALESCE(d.page_count,0)) AS pages,
+               SUM(CASE WHEN d.extract_method IN ('ocr','mixed') THEN COALESCE(d.page_count,0) ELSE 0 END) AS ocr_pages,
+               (SELECT MAX(CASE WHEN c.needs_review = 1 THEN 1 ELSE 0 END)
+                  FROM dbo.claims c WHERE c.case_name = d.case_name) AS needs_review
+        FROM dbo.source_documents d
+        GROUP BY d.case_name ORDER BY d.case_name""")
+    with st.container(border=True):
+        hd1, hd2 = st.columns([6, 1])
+        hd1.markdown("####  Recent activity")
+        hd2.caption("Processing status")
+        if act.empty:
+            st.info("No claim packages loaded yet.")
+        else:
+            rows = ""
+            for _, r in act.iterrows():
+                docs_n, pages_n, ocr_n = int(r["docs"]), int(r["pages"]), int(r["ocr_pages"])
+                pct = int(ocr_n / pages_n * 100) if pages_n else 100
+                status = (ui.chip("Needs review", "chip-review") if r["needs_review"]
+                          else ui.chip("Complete", "chip-ok"))
+                detail = f"{docs_n} documents · {ocr_n} of {pages_n} pages OCR'd" if ocr_n else \
+                         f"{docs_n} documents · {pages_n} pages indexed"
+                rows += (f'<tr><td>&#128462; <b>{r["case_name"]}</b></td>'
+                         f'<td style="color:var(--mute);">{detail}</td>'
+                         f'<td style="width:180px;"><div class="cbp-progress"><span style="width:{pct}%"></span></div></td>'
+                         f'<td style="text-align:right;">{status}</td></tr>')
+            st.markdown(f'<table class="cbp-tbl">{rows}</table>', unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ claims
 with tab_claims:
