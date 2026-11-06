@@ -8,6 +8,7 @@ viewer page (pages/document_viewer.py).
 from __future__ import annotations
 
 import tempfile
+from html import escape as html_escape
 from pathlib import Path
 
 import streamlit as st
@@ -206,33 +207,66 @@ with tab_claims:
 
 # ------------------------------------------------------------------ lines
 with tab_lines:
-    ui.hint("Procedure-level detail extracted from each bill (CPT/HCPCS, dates of service, charges).")
-    li = db.query_df("""SELECT claim_number, bill_file, line_no, dos_from, dos_thru, cpt_code,
-                        procedure_desc, provider_tin, provider_name, charge_amount, allowed_amount,
-                        paid_amount FROM dbo.claim_line_items ORDER BY claim_number, bill_file, line_no""")
+    tl1, tl2 = st.columns([6, 1])
+    with tl1:
+        ui.page_title("Service Lines", "Procedure-level detail extracted from each bill (CPT/HCPCS, dates of service, charges).")
+    li = db.query_df("""SELECT l.claim_number, l.bill_file, l.line_no, l.dos_from, l.dos_thru, l.cpt_code,
+                        l.procedure_desc, l.provider_tin, l.provider_name, l.charge_amount, l.allowed_amount,
+                        l.paid_amount, c.claimant_name
+                        FROM dbo.claim_line_items l
+                        LEFT JOIN dbo.claims c ON c.claim_number = l.claim_number
+                        ORDER BY l.claim_number, l.bill_file, l.line_no""")
     if li.empty:
         st.info("No service lines yet. Load a claim folder on the Intake tab.")
     else:
-        lc1, lc2 = st.columns([2, 3])
-        claim_opts = ["All claims"] + sorted(li["claim_number"].unique().tolist())
-        pick = lc1.selectbox("Filter by claim", claim_opts, key="line_claim")
-        lv = li if pick == "All claims" else li[li["claim_number"] == pick]
-        lc2.metric("Lines shown", f"{len(lv)}  /  {len(li)}")
-        st.dataframe(
-            lv, use_container_width=True, hide_index=True,
-            column_config={
-                "claim_number": st.column_config.TextColumn("Claim #", width="small"),
-                "bill_file": "Bill file", "line_no": st.column_config.NumberColumn("#", width="small"),
-                "dos_from": st.column_config.DateColumn("DOS from"),
-                "dos_thru": st.column_config.DateColumn("DOS thru"),
-                "cpt_code": "CPT", "procedure_desc": "Procedure",
-                "provider_tin": "TIN", "provider_name": "Provider",
-                "charge_amount": st.column_config.NumberColumn("Charge", format="$%.2f"),
-                "allowed_amount": st.column_config.NumberColumn("Allowed", format="$%.2f"),
-                "paid_amount": st.column_config.NumberColumn("Paid", format="$%.2f"),
-            })
-        st.download_button("Download service lines (CSV)", lv.to_csv(index=False).encode(),
-                           "service_lines.csv", "text/csv")
+        tl2.download_button("⤓ Download CSV", li.drop(columns=["claimant_name"]).to_csv(index=False).encode(),
+                            "service_lines.csv", "text/csv", use_container_width=True)
+        with st.container(border=True):
+            s1, s2, s3 = st.columns([2, 3, 2])
+            claim_opts = ["All claims"] + sorted(li["claim_number"].unique().tolist())
+            pick = s1.selectbox("Claim", claim_opts, key="line_claim", label_visibility="collapsed")
+            search = s2.text_input("search_lines", placeholder="Search bill, CPT, provider...",
+                                   label_visibility="collapsed")
+            lv = li if pick == "All claims" else li[li["claim_number"] == pick]
+            if search:
+                s = search.lower()
+                lv = lv[lv.apply(lambda r: s in " ".join(
+                    str(r[c]).lower() for c in ["bill_file", "cpt_code", "procedure_desc", "provider_name"]), axis=1)]
+            s3.markdown(f'<div style="text-align:right;color:var(--mute);padding-top:6px;">'
+                        f'Showing {len(lv)} of {len(li)} lines</div>', unsafe_allow_html=True)
+
+            headers = ["Line #", "Bill file", "DOS from", "DOS thru", "CPT", "Procedure", "TIN",
+                       "Provider", "Charge", "Allowed", "Paid"]
+            aligns = [""] * 8 + ["r", "r", "r"]
+            rows = []
+            for cnum, grp in lv.groupby("claim_number", sort=False):
+                claimant = grp["claimant_name"].iloc[0] or "—"
+                subtotal = grp["charge_amount"].dropna().sum()
+                nlines = len(grp)
+                rows.append(
+                    f'<tr class="cbp-grp"><td colspan="8">▾ <b>{cnum}</b> &nbsp;'
+                    f'<span class="cbp-ava" style="width:20px;height:20px;font-size:.58rem;display:inline-flex;'
+                    f'vertical-align:middle;">{ui.initials(claimant)}</span> '
+                    f'<span style="color:var(--mute);font-weight:600;">{html_escape(claimant)} · {nlines} line'
+                    f'{"s" if nlines != 1 else ""}</span></td>'
+                    f'<td colspan="3" class="cbp-sub-amt">Subtotal {ui.money(subtotal)}</td></tr>')
+                for _, r in grp.iterrows():
+                    rows.append(
+                        "<tr>"
+                        f'<td>L{int(r["line_no"]) if r["line_no"] else "-"}</td>'
+                        f'<td>&#128462; {html_escape(r["bill_file"])}</td>'
+                        f'<td>{ui.date_or_missing(r["dos_from"])}</td>'
+                        f'<td>{ui.date_or_missing(r["dos_thru"])}</td>'
+                        f'<td>{ui.text_or_missing(r["cpt_code"])}</td>'
+                        f'<td>{ui.text_or_missing(r["procedure_desc"])}</td>'
+                        f'<td>{ui.text_or_missing(r["provider_tin"])}</td>'
+                        f'<td>{ui.text_or_missing(r["provider_name"])}</td>'
+                        f'<td class="cbp-num">{ui.money(r["charge_amount"])}</td>'
+                        f'<td class="cbp-num">{ui.money(r["allowed_amount"])}</td>'
+                        f'<td class="cbp-num">{ui.money(r["paid_amount"])}</td>'
+                        "</tr>")
+            st.markdown(f'<div style="overflow-x:auto;">{ui.html_table(headers, rows, aligns)}</div>',
+                        unsafe_allow_html=True)
 
 # ------------------------------------------------------------------ validation
 with tab_val:
