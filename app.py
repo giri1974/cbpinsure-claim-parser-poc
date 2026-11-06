@@ -270,13 +270,13 @@ with tab_lines:
 
 # ------------------------------------------------------------------ validation
 with tab_val:
-    ui.hint("Compares extracted service lines with the client claims-accumulator spreadsheet, where one was provided.")
+    ui.page_title("Accumulator Check", "Compares extracted service lines with the client's claims-accumulator spreadsheet.")
     val = db.query_df("""
         SELECT a.claim_no, a.line_number, a.procedure_code AS acc_cpt, a.total_charges AS acc_charges,
                l.cpt_code AS parsed_cpt, l.charge_amount AS parsed_charges,
-               CASE WHEN l.line_id IS NULL THEN 'MISSING in parsed'
-                    WHEN l.charge_amount = a.total_charges THEN 'MATCH'
-                    ELSE 'CHARGE DIFFERS' END AS status
+               CASE WHEN l.line_id IS NULL THEN 'Missing in parsed'
+                    WHEN l.charge_amount = a.total_charges THEN 'Match'
+                    ELSE 'Charge differs' END AS status
         FROM dbo.accumulator_lines a
         LEFT JOIN dbo.claim_line_items l
           ON l.claim_number = a.claim_no AND l.cpt_code = LTRIM(RTRIM(a.procedure_code))
@@ -284,24 +284,92 @@ with tab_val:
     if val.empty:
         st.info("No accumulator spreadsheet was provided for the loaded cases, so there is nothing to compare.")
     else:
-        matched = int((val.status == "MATCH").sum())
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Accumulator lines", len(val))
-        m2.metric("Charge matched", matched)
-        m3.metric("Match rate", f"{matched / len(val) * 100:.0f}%")
-        st.dataframe(
-            val, use_container_width=True, hide_index=True,
-            column_config={
-                "claim_no": st.column_config.TextColumn("Claim #", width="small"),
-                "line_number": st.column_config.NumberColumn("Line", width="small"),
-                "acc_cpt": "Accum CPT",
-                "acc_charges": st.column_config.NumberColumn("Accum charge", format="$%.2f"),
-                "parsed_cpt": "Parsed CPT",
-                "parsed_charges": st.column_config.NumberColumn("Parsed charge", format="$%.2f"),
-                "status": "Status",
-            })
-        st.caption("Facility bills (UB-04) use revenue/CPT codes that differ from the accumulator's "
-                   "adjudicated procedure codes, so some lines show as differing even when the extraction is correct.")
+        total = len(val)
+        n_match = int((val.status == "Match").sum())
+        n_diff = int((val.status == "Charge differs").sum())
+        n_miss = int((val.status == "Missing in parsed").sum())
+        rate = int(n_match / total * 100)
+
+        c1, c2, c3, c4 = st.columns([1.1, 1.1, 1.3, 2])
+        c1.markdown(f'<div class="cbp-card"><div class="cbp-kpi-l">Accumulator lines</div>'
+                    f'<div class="cbp-kpi-n">{total}</div></div>', unsafe_allow_html=True)
+        c2.markdown(f'<div class="cbp-card"><div class="cbp-kpi-l">Charge matched</div>'
+                    f'<div class="cbp-kpi-n">{n_match}</div></div>', unsafe_allow_html=True)
+        gauge_color = ui.GREEN if rate >= 70 else (ui.AMBER if rate >= 40 else ui.RED)
+        c3.markdown(f'<div class="cbp-card" style="display:flex;align-items:center;justify-content:space-between;">'
+                    f'<div><div class="cbp-kpi-l">Match rate</div>'
+                    f'<div class="cbp-kpi-n" style="color:{gauge_color};">{rate}%</div></div>'
+                    f'{ui.donut(rate, gauge_color)}</div>', unsafe_allow_html=True)
+        c4.markdown(f'<div class="cbp-card"><div class="cbp-kpi-l">Status breakdown</div>'
+                    + ui.seg_bar([("Match", n_match, ui.GREEN), ("Charge differs", n_diff, ui.AMBER),
+                                  ("Missing in parsed", n_miss, ui.RED)]) + '</div>', unsafe_allow_html=True)
+
+        if st.session_state.get("hide_acc_info") is not True:
+            ib1, ib2 = st.columns([20, 1])
+            ib1.markdown('<div class="cbp-info"><b>&#9432; Why some lines differ</b> &nbsp; Facility bills (UB-04) use '
+                         'revenue codes that differ from the accumulator\'s adjudicated procedure codes, so some lines '
+                         'may show as differing even when the extraction is correct.</div>', unsafe_allow_html=True)
+            if ib2.button("✕", key="dismiss_acc"):
+                st.session_state["hide_acc_info"] = True
+                st.rerun()
+
+        with st.container(border=True):
+            seg = st.radio("accfilter", [f"All  {total}", f"Match  {n_match}",
+                                         f"Charge differs  {n_diff}", f"Missing in parsed  {n_miss}"],
+                           horizontal=True, label_visibility="collapsed")
+            fv = val
+            if seg.startswith("Match"):
+                fv = val[val.status == "Match"]
+            elif seg.startswith("Charge differs"):
+                fv = val[val.status == "Charge differs"]
+            elif seg.startswith("Missing"):
+                fv = val[val.status == "Missing in parsed"]
+
+            status_chip = {"Match": ui.chip("● Match", "chip-ok"),
+                           "Charge differs": ui.chip("● Charge differs", "chip-review"),
+                           "Missing in parsed": ui.chip("● Missing in parsed", "chip-red")}
+            def _num(x):
+                return float(x) if x is not None and x == x else 0.0
+            _vars = [abs(_num(r["parsed_charges"]) - _num(r["acc_charges"])) for _, r in fv.iterrows()]
+            max_var = max(_vars) if _vars and max(_vars) > 0 else 1.0
+            rows = []
+            for _, r in fv.iterrows():
+                bad = r["status"] != "Match"
+                pc, ac = r["parsed_charges"], r["acc_charges"]
+                var = None
+                if pc is not None and pc == pc and ac is not None and ac == ac:
+                    var = round(float(pc) - float(ac), 2)
+                if var is None or var == 0:
+                    var_html = '<span style="color:#B6C0CE;">—</span>'
+                else:
+                    w = int(abs(var) / max_var * 90)
+                    var_html = (f'<span style="color:{ui.RED};font-weight:700;">{"+" if var > 0 else ""}'
+                                f'${var:,.2f}</span><span class="cbp-varbar" style="width:{w}px;"></span>')
+                rows.append(
+                    f'<tr class="{"cbp-row-bad" if bad else ""}">'
+                    f'<td><b>{r["claim_no"]}</b></td>'
+                    f'<td>L{int(r["line_number"]) if r["line_number"] else "-"}</td>'
+                    f'<td>{ui.text_or_missing(r["acc_cpt"])}</td>'
+                    f'<td class="cbp-num">{ui.money(r["acc_charges"])}</td>'
+                    f'<td>{ui.text_or_missing(r["parsed_cpt"])}</td>'
+                    f'<td class="cbp-num">{ui.money(r["parsed_charges"])}</td>'
+                    f'<td class="cbp-num">{var_html}</td>'
+                    f'<td>{status_chip.get(r["status"], r["status"])}</td>'
+                    "</tr>")
+            # super-header row
+            super_hd = ('<tr><th></th><th></th>'
+                        '<th colspan="2" style="text-align:center;color:var(--brand-dark);">Accumulator '
+                        '<span style="font-weight:400;color:var(--mute);">client spreadsheet</span></th>'
+                        '<th colspan="2" style="text-align:center;color:var(--brand-dark);">Extracted '
+                        '<span style="font-weight:400;color:var(--mute);">parsed service line</span></th>'
+                        '<th></th><th></th></tr>')
+            headers = ["Claim #", "Line", "CPT", "Charge", "Parsed CPT", "Parsed charge", "Variance", "Status"]
+            aligns = ["", "", "", "r", "", "r", "r", ""]
+            th = "".join(f'<th class="{"cbp-num" if a == "r" else ""}">{h}</th>' for h, a in zip(headers, aligns))
+            tbl = (f'<table class="cbp-tbl"><thead>{super_hd}<tr>{th}</tr></thead>'
+                   f'<tbody>{"".join(rows)}</tbody></table>')
+            st.markdown(f'<div style="overflow-x:auto;">{tbl}</div>', unsafe_allow_html=True)
+            st.caption(f"Showing {len(fv)} of {total} lines")
 
 # ------------------------------------------------------------------ document library
 with tab_docs:
