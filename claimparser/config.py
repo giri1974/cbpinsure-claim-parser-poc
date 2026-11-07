@@ -169,8 +169,8 @@ def settings() -> dict:
         cfg["port"] = int(cfg.get("port") or 1433)
         cfg["mode"] = "cloud"
         cfg["driver"] = "pymssql"           # pure FreeTDS: works on Linux / Streamlit Cloud, no ODBC install
-        cfg.setdefault("server", "")
-        cfg.setdefault("database", "")
+        for k in ("server", "database", "user", "password"):
+            cfg.setdefault(k, "")
         return cfg
     f = _local_from_file()
     return {
