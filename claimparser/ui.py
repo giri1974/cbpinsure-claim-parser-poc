@@ -89,8 +89,9 @@ h1,h2,h3,h4 {{ color: var(--ink) !important; }}
 .chip-ok {{ background:var(--green-bg); color:var(--green); }}
 .chip-miss {{ background:var(--amber-bg); color:var(--amber); }}
 .chip-red {{ background:var(--red-bg); color:var(--red); }}
-.chip-type {{ background:#EAF1FB; color:var(--brand); border:1px solid #D5E3F6; margin-right:4px; }}
-.chip-dim {{ background:#EEF2F7; color:var(--mute); }}
+.chip-type {{ background:#E3F3E8; color:var(--green); border:1px solid #C6E6D0; margin-right:4px; }}
+.chip-dim {{ background:#EEF2F7; color:var(--mute); margin-right:4px; }}
+.cbp-filelink {{ color:var(--brand); font-weight:600; }}
 .cbp-badge {{ display:inline-block; padding:2px 10px; border-radius:11px; font-size:.74rem; font-weight:700; }}
 .cbp-badge.review {{ background:var(--amber-bg); color:var(--amber); }}
 .cbp-badge.ok {{ background:var(--green-bg); color:var(--green); }}
@@ -140,6 +141,20 @@ div[data-testid="stDataFrame"] {{ border:1px solid var(--line); border-radius:10
 .cbp-footer {{ color:#93A1B5; font-size:.78rem; text-align:center; margin-top:22px; }}
 .cbp-varbar {{ display:inline-block; height:6px; background:var(--red); border-radius:3px; vertical-align:middle;
   margin-left:6px; }}
+/* ---- document viewer ---- */
+.cbp-crumb {{ color:var(--mute); font-size:.84rem; }}
+.cbp-crumb b {{ color:var(--ink); }}
+.cbp-meta {{ display:flex; gap:34px; background:#FFFFFF; border:1px solid var(--line); border-radius:10px;
+  padding:10px 16px; margin-bottom:10px; font-size:.82rem; }}
+.cbp-meta .l {{ color:var(--mute); font-size:.7rem; text-transform:uppercase; letter-spacing:.04em; }}
+.cbp-meta .v {{ color:var(--ink); font-weight:700; }}
+.cbp-thumb-rail {{ display:flex; flex-direction:column; gap:10px; }}
+.cbp-thumb {{ border:1px solid var(--line); border-radius:8px; padding:6px; text-align:center; background:#fff; }}
+.cbp-thumb.sel {{ border:2px solid var(--brand); }}
+.cbp-thumb .lbl {{ font-size:.68rem; color:var(--mute); margin-top:3px; }}
+.cbp-conf {{ height:8px; background:#E9EEF5; border-radius:4px; overflow:hidden; }}
+.cbp-conf > span {{ display:block; height:100%; background:var(--green); }}
+.cbp-grp-h {{ font-weight:800; color:var(--ink); margin:12px 0 2px; }}
 </style>
 """
 
@@ -276,6 +291,18 @@ def open_document(doc_id: int) -> None:
     st.switch_page("pages/document_viewer.py")
 
 
+def confidence_dot(ok: bool, partial: bool = False) -> str:
+    color = GREEN if ok and not partial else (AMBER if partial else RED)
+    return f'<span style="color:{color};font-size:1.1rem;">&#9679;</span>'
+
+
+def field_block(label: str, value, dot: str) -> str:
+    val = html.escape(str(value)) if value not in (None, "", "None") else '<span style="color:#B6C0CE;">Not found</span>'
+    return (f'<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:7px 0;">'
+            f'<div><div style="font-size:.74rem;color:var(--mute);">{html.escape(label)}</div>'
+            f'<div style="font-weight:600;color:var(--ink);">{val}</div></div>{dot}</div>')
+
+
 # ----- value formatting for styled HTML tables ----------------------------------------------------
 def money(v, missing_chip: bool = False) -> str:
     if v is None or (isinstance(v, float) and v != v):
@@ -283,9 +310,10 @@ def money(v, missing_chip: bool = False) -> str:
     return f"${float(v):,.2f}"
 
 
-def text_or_missing(v) -> str:
+def text_or_missing(v, pencil: bool = False) -> str:
     if v is None or str(v).strip() == "" or str(v).lower() == "none":
-        return chip("Missing", "chip-miss")
+        label = "&#9998; Missing" if pencil else "Missing"
+        return f'<span class="cbp-chip chip-miss">{label}</span>'
     return html.escape(str(v))
 
 

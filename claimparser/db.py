@@ -265,7 +265,9 @@ def query_df(sql: str, params=()):
 
 def update_claim_fields(claim_number: str, fields: dict) -> None:
     allowed = {"activity_code", "date_of_loss", "diagnosis_code", "diagnosis_desc", "provider_tin",
-               "provider_name", "provider_address", "needs_review", "review_notes"}
+               "provider_name", "provider_address", "needs_review", "review_notes",
+               "date_of_service_from", "date_of_service_thru", "total_charges",
+               "total_cob_allowable", "total_primary_paid", "net_payable"}
     sets = {k: v for k, v in fields.items() if k in allowed}
     if not sets:
         return

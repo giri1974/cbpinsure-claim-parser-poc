@@ -6,3 +6,5 @@ __pycache__/
 .streamlit/secrets.toml
 design/_shots/
 CBPInsure_POC_Screens.pdf
+design/_ref/
+CBPConnect-Screens.pdf

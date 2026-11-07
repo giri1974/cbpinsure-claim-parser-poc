@@ -19,6 +19,96 @@ from claimparser.config import DEFAULT_SAMPLES
 ui.page_setup("Claims Intake")
 ui.topbar()
 
+
+@st.dialog("Complete claim", width="large")
+def complete_claim_dialog(claim_number: str) -> None:
+    """Slide-over-style editor (Streamlit modal) matching the reference drawer."""
+    cur = db.query_df("SELECT * FROM dbo.claims WHERE claim_number=?", (claim_number,)).iloc[0]
+    # header card
+    st.markdown(
+        f'<div style="font-size:.72rem;font-weight:700;color:var(--brand);letter-spacing:.05em;">CLAIM REVIEW</div>'
+        f'<div style="font-size:1.1rem;font-weight:800;margin-bottom:8px;">Complete claim {claim_number}</div>'
+        f'<div class="cbp-card" style="display:flex;gap:12px;align-items:center;">'
+        f'<span class="cbp-ava">{ui.initials(cur["claimant_name"])}</span>'
+        f'<div><b>{html_escape(str(cur["claimant_name"] or "Unknown"))}</b>'
+        f'<div style="color:var(--mute);font-size:.82rem;">{html_escape(str(cur["case_name"] or ""))}</div></div>'
+        f'<div style="margin-left:auto;text-align:right;font-size:.82rem;color:var(--mute);">Provider<br>'
+        f'<b style="color:var(--ink);">{html_escape(str(cur["provider_name"] or "—"))}</b></div>'
+        f'<div style="text-align:right;font-size:.82rem;color:var(--mute);">Charges<br>'
+        f'<b style="color:var(--ink);">{ui.money(cur["total_charges"])}</b></div></div>',
+        unsafe_allow_html=True)
+
+    # required-field completeness (the 6 fields the reference tracks)
+    req = {"DOS from": cur["date_of_service_from"], "DOS thru": cur["date_of_service_thru"],
+           "Diagnosis": cur["diagnosis_code"], "Activity code": cur["activity_code"],
+           "Provider": cur["provider_name"], "TIN": cur["provider_tin"]}
+    done = sum(1 for v in req.values() if v is not None and str(v).strip() not in ("", "None", "NaT"))
+    pct = int(done / len(req) * 100)
+    st.markdown(f'**{done} of {len(req)} required fields complete**'
+                f'<div class="cbp-progress" style="margin-top:4px;"><span style="width:{pct}%;'
+                f'background:{"var(--green)" if pct==100 else "var(--amber)"};"></span></div>',
+                unsafe_allow_html=True)
+
+    def _d(v):
+        try:
+            import pandas as pd
+            return None if v is None or str(v) in ("", "NaT", "None") else pd.to_datetime(v).date()
+        except Exception:
+            return None
+
+    st.markdown("##### Service dates")
+    d1, d2 = st.columns(2)
+    dos_from = d1.date_input("DOS from", value=_d(cur["date_of_service_from"]), format="MM/DD/YYYY")
+    dos_thru = d2.date_input("DOS thru", value=_d(cur["date_of_service_thru"]), format="MM/DD/YYYY")
+
+    st.markdown("##### Diagnosis & activity")
+    g1, g2 = st.columns(2)
+    dx = g1.text_input("Diagnosis (Dx)", cur["diagnosis_code"] or "")
+    act = g2.text_input("Activity code", cur["activity_code"] or "", placeholder="Enter activity code",
+                        help="Required for adjudication")
+    if not (cur["activity_code"] or "").strip():
+        g2.caption(":orange[Required for adjudication]")
+    dol = st.date_input("Date of loss", value=_d(cur["date_of_loss"]), format="MM/DD/YYYY")
+
+    st.markdown("##### Provider & TIN")
+    pname = st.text_input("Provider", cur["provider_name"] or "")
+    tin = st.text_input("TIN", cur["provider_tin"] or "", placeholder="Enter TIN",
+                        help="Required for adjudication")
+    if not (cur["provider_tin"] or "").strip():
+        st.caption(":orange[Required for adjudication]")
+
+    st.markdown("##### Amounts")
+    a1, a2, a3 = st.columns(3)
+    charges = a1.text_input("Charges", "" if cur["total_charges"] is None else str(cur["total_charges"]))
+    cob = a2.text_input("COB allowable", "" if cur["total_cob_allowable"] is None else str(cur["total_cob_allowable"]))
+    prim = a3.text_input("Primary paid", "" if cur["total_primary_paid"] is None else str(cur["total_primary_paid"]))
+
+    def _num(x):
+        try:
+            return float(str(x).replace(",", "").replace("$", "")) if str(x).strip() else None
+        except ValueError:
+            return None
+
+    bc1, bc2 = st.columns([1, 1])
+    if bc1.button("Cancel", use_container_width=True):
+        st.rerun()
+    if bc2.button("Save & next claim", type="primary", use_container_width=True):
+        fields = {
+            "date_of_service_from": dos_from.isoformat() if dos_from else None,
+            "date_of_service_thru": dos_thru.isoformat() if dos_thru else None,
+            "diagnosis_code": dx or None, "activity_code": act or None,
+            "date_of_loss": dol.isoformat() if dol else None,
+            "provider_name": pname or None, "provider_tin": tin or None,
+            "total_charges": _num(charges), "total_cob_allowable": _num(cob),
+            "total_primary_paid": _num(prim),
+        }
+        complete = all([fields["date_of_service_from"], fields["date_of_service_thru"], fields["diagnosis_code"],
+                        fields["activity_code"], fields["provider_name"], fields["provider_tin"]])
+        fields["needs_review"] = 0 if complete else 1
+        db.update_claim_fields(claim_number, fields)
+        st.session_state["claim_saved"] = claim_number
+        st.rerun()
+
 # ---- KPI strip -----------------------------------------------------------------------------------
 _k = db.query_df("""SELECT (SELECT COUNT(*) FROM dbo.claims WHERE needs_review = 1) AS review,
                            (SELECT COUNT(*) FROM dbo.claim_line_items) AS lines,
@@ -143,15 +233,22 @@ with tab_claims:
                     str(r[c]).lower() for c in ["claim_number", "claimant_name", "provider_name", "case_name"]), axis=1)
                 view = view[mask]
 
+            if st.session_state.pop("claim_saved", None):
+                st.success("Saved.")
+
             nr = int((view["needs_review"] == True).sum())
             st.markdown(f'<div style="margin:2px 0 6px;">{ui.chip("•", "chip-review")} '
                         f'<b>Needs review ({nr})</b></div>', unsafe_allow_html=True)
 
+            per_page = 10
+            total_v = len(view)
+            page_view = view.head(per_page)
             rows = []
-            for _, r in view.iterrows():
+            for _, r in page_view.iterrows():
                 status = ui.chip("● Needs review", "chip-review") if r["needs_review"] else ui.chip("● Complete", "chip-ok")
                 rows.append(
                     "<tr>"
+                    '<td><input type="checkbox" disabled></td>'
                     f'<td>{status}</td>'
                     f'<td><b>{r["claim_number"]}</b></td>'
                     f'<td style="color:var(--mute);">{r["case_name"] or "—"}</td>'
@@ -160,50 +257,35 @@ with tab_claims:
                     f'{ui.text_or_missing(r["claimant_name"])}</td>'
                     f'<td>{ui.date_or_missing(r["date_of_service_from"])}</td>'
                     f'<td>{ui.date_or_missing(r["date_of_service_thru"])}</td>'
-                    f'<td>{ui.text_or_missing(r["diagnosis_code"])}</td>'
-                    f'<td>{ui.text_or_missing(r["activity_code"])}</td>'
-                    f'<td>{ui.text_or_missing(r["provider_tin"])}</td>'
-                    f'<td>{ui.text_or_missing(r["provider_name"])}</td>'
+                    f'<td>{ui.text_or_missing(r["diagnosis_code"], pencil=True)}</td>'
+                    f'<td>{ui.text_or_missing(r["activity_code"], pencil=True)}</td>'
+                    f'<td>{ui.text_or_missing(r["provider_tin"], pencil=True)}</td>'
+                    f'<td>{ui.text_or_missing(r["provider_name"], pencil=True)}</td>'
                     f'<td class="cbp-num">{ui.money(r["total_charges"])}</td>'
                     f'<td class="cbp-num">{ui.money(r["total_cob_allowable"])}</td>'
                     f'<td class="cbp-num">{ui.money(r["total_primary_paid"])}</td>'
                     "</tr>")
-            headers = ["Status", "Claim #", "Case", "Claimant", "DOS from", "DOS thru", "Dx", "Activity",
+            headers = ["", "Status", "Claim #", "Case", "Claimant", "DOS from", "DOS thru", "Dx", "Activity",
                        "TIN", "Provider", "Charges", "COB allowable", "Primary paid"]
-            aligns = [""] * 10 + ["r", "r", "r"]
+            aligns = [""] * 11 + ["r", "r", "r"]
             st.markdown(f'<div style="overflow-x:auto;">{ui.html_table(headers, rows, aligns)}</div>',
                         unsafe_allow_html=True)
-            st.caption(f"Showing {len(view)} of {len(claims)} claims")
+            ft1, ft2 = st.columns([3, 1])
+            ft1.caption(f"Showing 1-{min(per_page, total_v)} of {total_v} claims")
+            ft2.markdown('<div style="text-align:right;color:var(--mute);">Rows per page: 10</div>',
+                         unsafe_allow_html=True)
 
-        st.subheader("Complete missing claim details")
-        view_full = view
-        labels = {r["claim_number"]: f'{r["claim_number"]}  -  {r["claimant_name"] or "?"}'
-                  f'  ({"needs review" if r["needs_review"] else "reviewed"})'
-                  for _, r in view_full.iterrows()} if not view_full.empty else {}
-        if not labels:
-            st.info("No claims match the current filter.")
-        else:
-            cn = st.selectbox("Claim", list(labels), format_func=lambda c: labels[c])
-            cur = claims[claims["claim_number"] == cn].iloc[0]
-            b = ("review", "Needs review") if cur["needs_review"] else ("ok", "Reviewed")
-            st.markdown(ui.badge(*b), unsafe_allow_html=True)
-            if cur["review_notes"]:
-                st.caption(f"Flagged because: {cur['review_notes']}")
-            with st.form("edit_claim"):
-                c1, c2, c3 = st.columns(3)
-                act = c1.text_input("Activity code", cur["activity_code"] or "")
-                dol = c2.text_input("Date of loss (YYYY-MM-DD)", str(cur["date_of_loss"] or ""))
-                dx = c3.text_input("Diagnosis code", cur["diagnosis_code"] or "")
-                tin = c1.text_input("Provider TIN", cur["provider_tin"] or "")
-                pname = c2.text_input("Provider name", cur["provider_name"] or "")
-                reviewed = c3.checkbox("Mark as reviewed", value=not bool(cur["needs_review"]))
-                if st.form_submit_button("Save changes", type="primary"):
-                    db.update_claim_fields(cn, {
-                        "activity_code": act or None, "date_of_loss": dol or None, "diagnosis_code": dx or None,
-                        "provider_tin": tin or None, "provider_name": pname or None,
-                        "needs_review": 0 if reviewed else 1})
-                    st.success("Saved.")
-                    st.rerun()
+            st.write("")
+            cc1, cc2 = st.columns([3, 1])
+            labels = {r["claim_number"]: f'{r["claim_number"]}  -  {r["claimant_name"] or "?"}'
+                      f'  ({"needs review" if r["needs_review"] else "complete"})'
+                      for _, r in view.iterrows()}
+            if labels:
+                pick_claim = cc1.selectbox("Claim to complete", list(labels),
+                                           format_func=lambda c: labels[c], label_visibility="collapsed")
+                cc2.markdown("<div style='height:2px'></div>", unsafe_allow_html=True)
+                if cc2.button("Complete claim  ↗", type="primary", use_container_width=True):
+                    complete_claim_dialog(pick_claim)
 
 # ------------------------------------------------------------------ lines
 with tab_lines:
@@ -254,7 +336,7 @@ with tab_lines:
                     rows.append(
                         "<tr>"
                         f'<td>L{int(r["line_no"]) if r["line_no"] else "-"}</td>'
-                        f'<td>&#128462; {html_escape(r["bill_file"])}</td>'
+                        f'<td>&#128462; <span class="cbp-filelink">{html_escape(r["bill_file"])}</span></td>'
                         f'<td>{ui.date_or_missing(r["dos_from"])}</td>'
                         f'<td>{ui.date_or_missing(r["dos_thru"])}</td>'
                         f'<td>{ui.text_or_missing(r["cpt_code"])}</td>'
@@ -334,7 +416,6 @@ with tab_val:
             max_var = max(_vars) if _vars and max(_vars) > 0 else 1.0
             rows = []
             for _, r in fv.iterrows():
-                bad = r["status"] != "Match"
                 pc, ac = r["parsed_charges"], r["acc_charges"]
                 var = None
                 if pc is not None and pc == pc and ac is not None and ac == ac:
@@ -346,7 +427,7 @@ with tab_val:
                     var_html = (f'<span style="color:{ui.RED};font-weight:700;">{"+" if var > 0 else ""}'
                                 f'${var:,.2f}</span><span class="cbp-varbar" style="width:{w}px;"></span>')
                 rows.append(
-                    f'<tr class="{"cbp-row-bad" if bad else ""}">'
+                    "<tr>"
                     f'<td><b>{r["claim_no"]}</b></td>'
                     f'<td>L{int(r["line_number"]) if r["line_number"] else "-"}</td>'
                     f'<td>{ui.text_or_missing(r["acc_cpt"])}</td>'
@@ -432,7 +513,7 @@ with tab_docs:
                     f'<td><b>#{int(r["doc_id"])}</b></td>'
                     f'<td>{html_escape(r["case_name"] or "—")}</td>'
                     f'<td>{ui.text_or_missing(r["claim_number"])}</td>'
-                    f'<td>&#128462; {html_escape(r["file_name"])}</td>'
+                    f'<td>&#128462; <span class="cbp-filelink">{html_escape(r["file_name"])}</span></td>'
                     f'<td>{ui.type_chips(r["doc_types"])}</td>'
                     f'<td>{int(r["page_count"]) if r["page_count"] and r["page_count"] == r["page_count"] else "—"}</td>'
                     f'<td>{ui.method_chip(r["extract_method"])}</td>'
