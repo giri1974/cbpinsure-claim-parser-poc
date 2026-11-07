@@ -102,11 +102,14 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color:var(--brand) !importan
 .stTabs [data-baseweb="tab-highlight"] {{ background:var(--brand); }}
 
 /* ---- data tables (styled HTML) ---- */
-.cbp-tbl {{ width:100%; border-collapse:collapse; font-size:.85rem; }}
-.cbp-tbl th {{ text-align:left; color:var(--mute); font-weight:600; font-size:.74rem;
-  text-transform:uppercase; letter-spacing:.03em; padding:9px 10px; border-bottom:1px solid var(--line); }}
-.cbp-tbl td {{ padding:9px 10px; border-bottom:1px solid #F1F4F8; color:var(--ink); }}
-.cbp-tbl tr:hover td {{ background:#FAFBFD; }}
+.cbp-tbl {{ width:100%; border-collapse:collapse; font-size:.85rem;
+  border:1px solid var(--line); border-radius:10px; overflow:hidden; }}
+.cbp-tbl thead th {{ background:#F4F7FB; }}
+.cbp-tbl th {{ text-align:left; color:var(--mute); font-weight:700; font-size:.74rem;
+  text-transform:uppercase; letter-spacing:.03em; padding:10px 12px; border-bottom:1px solid var(--line); }}
+.cbp-tbl td {{ padding:10px 12px; border-bottom:1px solid #F1F4F8; color:var(--ink); }}
+.cbp-tbl tbody tr:nth-child(even) td {{ background:#FBFCFE; }}
+.cbp-tbl tbody tr:hover td {{ background:#EEF4FB; }}
 .cbp-grp td {{ background:#F4F7FB; font-weight:700; color:var(--ink); }}
 .cbp-row-bad td {{ background:#FDF4F5; }}
 .cbp-num {{ text-align:right; font-variant-numeric:tabular-nums; }}
@@ -122,6 +125,13 @@ button[data-baseweb="tab"][aria-selected="true"] {{ color:var(--brand) !importan
 .stButton > button[kind="primary"]:hover {{ background:var(--brand-dark); }}
 .stButton > button[kind="secondary"] {{ border:1px solid var(--line); border-radius:8px; color:var(--ink); }}
 .stDownloadButton > button {{ border:1px solid var(--line); border-radius:8px; }}
+
+/* ---- file uploader drop zone: soft blue fill + dashed blue border (matches Figma) ---- */
+[data-testid="stFileUploaderDropzone"] {{ background:#EFF5FC; border:1.5px dashed #9CC2EA;
+  border-radius:10px; }}
+[data-testid="stFileUploaderDropzone"]:hover {{ background:#E6F0FA; border-color:var(--brand); }}
+[data-testid="stFileUploaderDropzone"] svg {{ color:var(--brand); fill:var(--brand); }}
+[data-testid="stFileUploaderDropzone"] button {{ border:1px solid var(--line); background:#FFFFFF; }}
 
 /* ---- misc ---- */
 div[data-testid="stDataFrame"] {{ border:1px solid var(--line); border-radius:10px; }}
