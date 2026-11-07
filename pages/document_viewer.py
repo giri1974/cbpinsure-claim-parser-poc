@@ -64,8 +64,8 @@ st.markdown(f'<div style="font-weight:800;font-size:1.0rem;margin:6px 0;">&#1284
             f'<div class="v" style="font-weight:500;font-size:.78rem;word-break:break-all;">{full["file_path"]}</div></div>'
             f'</div>', unsafe_allow_html=True)
 
-pages = db.query_df("SELECT page_no, page_type, page_text FROM dbo.document_pages WHERE doc_id=? ORDER BY page_no",
-                    (current,))
+pages = db.query_df("SELECT page_no, page_type, page_text, page_image FROM dbo.document_pages "
+                    "WHERE doc_id=? ORDER BY page_no", (current,))
 if pages.empty:
     st.info("This document has no indexed pages (for example, a spreadsheet).")
     ui.footer()
@@ -76,23 +76,32 @@ key = f"viewer_page_{current}"
 if key not in st.session_state or st.session_state[key] >= n:
     st.session_state[key] = 0
 
+import base64
+
+
+def _page_png(pg) -> bytes | None:
+    """Prefer the image stored in the DB (works on cloud); fall back to rendering from disk."""
+    img = pg["page_image"]
+    if img:
+        return bytes(img)
+    try:
+        import pymupdf
+        return pymupdf.open(full["file_path"])[int(pg["page_no"]) - 1].get_pixmap(dpi=140).tobytes("png")
+    except Exception:
+        return None
+
+
 rail, center, right = st.columns([1, 3, 2], gap="medium")
 
 # ---- left: thumbnail rail ----
 with rail:
     st.markdown("**Pages**")
-    try:
-        import pymupdf
-        pdf = pymupdf.open(full["file_path"])
-    except Exception:
-        pdf = None
     for i, (_, pg) in enumerate(pages.iterrows()):
         sel = "sel" if i == st.session_state[key] else ""
-        img_html = ""
-        if pdf is not None:
-            import base64
-            png = pdf[int(pg["page_no"]) - 1].get_pixmap(dpi=28).tobytes("png")
-            img_html = f'<img src="data:image/png;base64,{base64.b64encode(png).decode()}" style="width:100%;">'
+        png = _page_png(pg)
+        mime = "image/jpeg" if png and png[:3] == b"\xff\xd8\xff" else "image/png"
+        img_html = (f'<img src="data:{mime};base64,{base64.b64encode(png).decode()}" style="width:100%;">'
+                    if png else '<div style="height:60px;color:#B6C0CE;">no image</div>')
         st.markdown(f'<div class="cbp-thumb {sel}">{img_html}<div class="lbl">{pg["page_type"]}</div></div>',
                     unsafe_allow_html=True)
         if st.button(f"Page {i + 1}", key=f"thumb_{current}_{i}", use_container_width=True):
@@ -115,13 +124,11 @@ with center:
                    unsafe_allow_html=True)
     zoom = nc[3].select_slider("zoom", options=[60, 80, 100, 130, 160], value=100,
                                label_visibility="collapsed")
-    try:
-        import pymupdf
-        doc2 = pymupdf.open(full["file_path"])
-        png = doc2[int(pg["page_no"]) - 1].get_pixmap(dpi=140).tobytes("png")
+    png = _page_png(pg)
+    if png:
         st.image(png, width=int(640 * zoom / 100))
-    except Exception:
-        st.info("Original page image unavailable (file not on this machine).")
+    else:
+        st.info("Original page image unavailable.")
 
 # ---- right: extracted fields / OCR text / JSON ----
 with right:

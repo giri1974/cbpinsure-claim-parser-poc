@@ -197,14 +197,41 @@ def process_case(case_dir: Path, progress: Progress = print, recurse: bool = Tru
     return _assemble(case_name, case_dir, docs, bills, policy_info, claim_form, accum)
 
 
+def _render_pages(f: Path, count: int, dpi: int = 90) -> dict[int, bytes]:
+    """Render each PDF page to compact JPEG bytes so images travel with the data (cloud deploy).
+    JPEG + modest DPI keeps blobs small (~60-120 KB) which matters for free-tier DBs."""
+    imgs: dict[int, bytes] = {}
+    if f.suffix.lower() != ".pdf":
+        return imgs
+    try:
+        import io
+        import pymupdf
+        from PIL import Image
+        doc = pymupdf.open(f)
+        for i in range(min(count or len(doc), len(doc))):
+            try:
+                pix = doc[i].get_pixmap(dpi=dpi)
+                im = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                buf = io.BytesIO()
+                im.save(buf, format="JPEG", quality=70, optimize=True)
+                imgs[i + 1] = buf.getvalue()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return imgs
+
+
 def _doc_row(case, claim_no, f: Path, kinds, ex, method, parsed, text) -> dict:
+    texts = (ex or {}).get("pages", [])
+    imgs = _render_pages(f, len(texts))
     return {
         "case_name": case, "claim_number": claim_no, "file_name": f.name, "file_path": str(f)[:900],
         "doc_types": ",".join(kinds)[:200], "page_count": (ex or {}).get("page_count"),
         "extract_method": method, "parsed_json": json.dumps(parsed, default=str),
         "raw_text": text,
-        # per-page index (stored in dbo.document_pages, keyed by doc_id)
-        "_pages": [(i, classify_page(t), t) for i, t in enumerate((ex or {}).get("pages", []), 1)],
+        # per-page index (stored in dbo.document_pages, keyed by doc_id): (page_no, type, text, png_bytes)
+        "_pages": [(i, classify_page(t), t, imgs.get(i)) for i, t in enumerate(texts, 1)],
     }
 
 

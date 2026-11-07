@@ -346,8 +346,22 @@ def initials(name) -> str:
 _THUMB_DIR = ROOT / "ocr_cache" / "thumbs"
 
 
+def _img_mime(b: bytes) -> str:
+    return "image/jpeg" if b[:3] == b"\xff\xd8\xff" else "image/png"
+
+
+def thumb_from_bytes(img, width: int = 54) -> str:
+    """Thumbnail <img> from JPEG/PNG bytes stored in the DB. Falls back to an icon."""
+    if img:
+        b = bytes(img)
+        b64 = base64.b64encode(b).decode()
+        return (f'<img src="data:{_img_mime(b)};base64,{b64}" '
+                f'style="width:{width}px;border:1px solid var(--line);border-radius:4px;">')
+    return '<span style="font-size:1.1rem;">&#128462;</span>'
+
+
 def page_thumb(file_path: str, doc_id: int, width: int = 54) -> str:
-    """Return an <img> data-URI of the first page, cached on disk. Falls back to an icon."""
+    """Render the first page from disk, cached (local only). Falls back to an icon."""
     try:
         _THUMB_DIR.mkdir(parents=True, exist_ok=True)
         cache = _THUMB_DIR / f"{doc_id}.png"
@@ -356,8 +370,7 @@ def page_thumb(file_path: str, doc_id: int, width: int = 54) -> str:
             if p.suffix.lower() != ".pdf" or not p.exists():
                 return '<span style="font-size:1.1rem;">&#128202;</span>'
             import pymupdf
-            doc = pymupdf.open(p)
-            doc[0].get_pixmap(dpi=36).save(str(cache))
+            pymupdf.open(p)[0].get_pixmap(dpi=36).save(str(cache))
         b64 = base64.b64encode(cache.read_bytes()).decode()
         return (f'<img src="data:image/png;base64,{b64}" '
                 f'style="width:{width}px;border:1px solid var(--line);border-radius:4px;">')

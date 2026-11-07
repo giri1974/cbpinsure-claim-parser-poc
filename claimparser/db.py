@@ -87,7 +87,8 @@ SCHEMA = [
         doc_id INT NOT NULL REFERENCES dbo.source_documents(doc_id),
         page_no INT NOT NULL,
         page_type NVARCHAR(30) NULL,
-        page_text NVARCHAR(MAX) NULL)""",
+        page_text NVARCHAR(MAX) NULL,
+        page_image VARBINARY(MAX) NULL)""",
     """IF OBJECT_ID('dbo.accumulator_lines') IS NULL CREATE TABLE dbo.accumulator_lines (
         id INT IDENTITY(1,1) PRIMARY KEY,
         case_name NVARCHAR(300) NULL,
@@ -172,6 +173,7 @@ def _pg_schema() -> list[str]:
         d = re.sub(r"IF OBJECT_ID\('dbo\.(\w+)'\) IS NULL\s+CREATE TABLE dbo\.\1",
                    r"CREATE TABLE IF NOT EXISTS dbo.\1", ddl)
         d = re.sub(r"INT IDENTITY\(1,1\)\s+PRIMARY KEY", "SERIAL PRIMARY KEY", d, flags=re.I)
+        d = re.sub(r"VARBINARY\(MAX\)", "BYTEA", d, flags=re.I)
         d = re.sub(r"NVARCHAR\(MAX\)", "TEXT", d, flags=re.I)
         d = re.sub(r"N?VARCHAR\(\d+\)", "TEXT", d, flags=re.I)
         d = re.sub(r"DATETIME2", "TIMESTAMPTZ", d, flags=re.I)
@@ -221,10 +223,17 @@ def connect():
 
 def init_db() -> None:
     ensure_database()
-    ddls = _pg_schema() if config.mode() == "postgres" else SCHEMA
+    is_pg = config.mode() == "postgres"
+    ddls = _pg_schema() if is_pg else SCHEMA
     with connect() as cn:
         for ddl in ddls:
             cn.execute(ddl)
+        # idempotent migration: add page_image to pre-existing document_pages tables
+        if is_pg:
+            cn.execute("ALTER TABLE dbo.document_pages ADD COLUMN IF NOT EXISTS page_image BYTEA NULL")
+        else:
+            cn.execute("IF COL_LENGTH('dbo.document_pages','page_image') IS NULL "
+                       "ALTER TABLE dbo.document_pages ADD page_image VARBINARY(MAX) NULL")
 
 
 def reset_data() -> None:
@@ -269,9 +278,11 @@ def save_case(case: dict) -> None:
             doc_id = cn.execute("SELECT doc_id FROM dbo.source_documents WHERE file_path=?",
                                 d["file_path"]).fetchone()[0]
             cn.execute("DELETE FROM dbo.document_pages WHERE doc_id=?", doc_id)
-            for no, kind, text in pages:
-                cn.execute("INSERT INTO dbo.document_pages (doc_id, page_no, page_type, page_text) VALUES (?,?,?,?)",
-                           doc_id, no, kind, text)
+            for rec in pages:
+                no, kind, text = rec[0], rec[1], rec[2]
+                img = rec[3] if len(rec) > 3 else None
+                cn.execute("INSERT INTO dbo.document_pages (doc_id, page_no, page_type, page_text, page_image) "
+                           "VALUES (?,?,?,?,?)", doc_id, no, kind, text, img)
         if case.get("accumulator"):
             cn.execute("DELETE FROM dbo.accumulator_lines WHERE case_name=?", case["case_name"])
             for a in case["accumulator"]:
