@@ -33,3 +33,25 @@ First OCR run is slow (~20 s per scanned file); results are cached in `ocr_cache
 3. The database host must accept connections from the internet (allow-list / remote access enabled).
 4. Sample files are not in the repo: load data once with `python run_ingest.py --db cloud --reset`
    from a PC that can reach the cloud database; deployed users can also upload PDFs/ZIPs.
+
+## Deploy to Fly.io
+The app runs on Linux in the container using the **cloud** SQL Server (pymssql) and RapidOCR.
+
+```
+fly auth login
+fly launch --no-deploy            # pick an app name/region; keeps this fly.toml & Dockerfile
+fly secrets set \
+  CLOUD_SQL_SERVER=db77955.databaseasp.net \
+  CLOUD_SQL_PORT=1433 \
+  CLOUD_SQL_DATABASE=db77955 \
+  CLOUD_SQL_USER=db77955 \
+  CLOUD_SQL_PASSWORD='<password>'
+fly deploy
+```
+
+Notes:
+* The database host must accept connections from Fly's IPs (open its firewall / allow-list).
+* Load data once from a machine that can reach the cloud DB: `python run_ingest.py --db cloud --reset`.
+  The container image contains no sample files; deployed users can also upload PDFs/ZIPs.
+* Document Viewer page images need the source PDFs on disk, so on Fly only the extracted text shows.
+* Credentials live in `fly secrets`, never in the image or git.

@@ -1,0 +1,38 @@
+# Fly.io config for the CBPInsure Claim Parser POC.
+# Edit `app` to a unique name, then:  fly launch --no-deploy  (or use this file) and  fly deploy
+app = "cbpinsure-claim-parser-poc"
+primary_region = "iad"   # change to the region nearest you / the database
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DB_MODE = "cloud"
+  OCR_ENGINE = "rapidocr"
+  STREAMLIT_SERVER_HEADLESS = "true"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 25
+    soft_limit = 20
+
+# Streamlit keeps a websocket open; give health checks a generous grace period.
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "40s"
+    method = "get"
+    path = "/healthz"
+
+[[vm]]
+  # RapidOCR/ONNX + pandas need memory; 1GB is the safe minimum.
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

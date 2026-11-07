@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.git/
+.gitignore
+ocr_cache/
+design/
+scratch/
+tools/
+.env
+.streamlit/secrets.toml
+CBPInsure_POC_Screens.pdf
+*.md
+.vscode/
