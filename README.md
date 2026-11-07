@@ -55,3 +55,22 @@ Notes:
   The container image contains no sample files; deployed users can also upload PDFs/ZIPs.
 * Document Viewer page images need the source PDFs on disk, so on Fly only the extracted text shows.
 * Credentials live in `fly secrets`, never in the image or git.
+
+## Deploy to Streamlit Community Cloud (free) with Postgres
+The hosted app uses a cloud **Postgres** DB (Neon or Render) via `psycopg`; local SQL Server is unchanged.
+
+1. Create a free Postgres (Render or Neon) and copy its connection URL.
+2. Load the sample data once from a machine that can reach it:
+   `DATABASE_URL=postgresql://... python run_ingest.py --db postgres --reset`
+3. On https://share.streamlit.io create the app from this repo, branch `main`, file `app.py`.
+4. App → Settings → Secrets: paste the `[postgres]` block from `.streamlit/secrets.toml.example`.
+   The app auto-selects Postgres mode on a hosted server.
+
+### Deploy to Render instead (app + DB together)
+`render.yaml` defines a free Docker web service wired to a Render Postgres via `DATABASE_URL`.
+Create the Postgres DB (named `cbpinsure`), then a Web Service from the repo; Render injects `DATABASE_URL`.
+
+Notes for any hosted deployment:
+* Credentials come from secrets / env (`DATABASE_URL` or `[postgres]`), never the repo.
+* The Document Viewer shows OCR text + parsed fields; original page images need the source PDFs
+  on disk, which aren't in the image. Uploads still work.

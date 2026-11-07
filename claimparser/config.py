@@ -51,16 +51,19 @@ def ocr_engine() -> str:
 # ------------------------------------------------------------------ mode
 def set_mode(mode: str | None) -> None:
     global _MODE
-    if mode not in (None, "local", "cloud"):
-        raise ValueError("mode must be 'local' or 'cloud'")
+    if mode not in (None, "local", "cloud", "postgres"):
+        raise ValueError("mode must be 'local', 'cloud' or 'postgres'")
     _MODE = mode
 
 
 def mode() -> str:
     m = _MODE or os.getenv("DB_MODE", "").strip().lower()
-    if m in ("local", "cloud"):
+    if m in ("local", "cloud", "postgres"):
         return m
-    return "local" if sys.platform == "win32" else "cloud"
+    if sys.platform == "win32":
+        return "local"
+    # Hosted (Streamlit Cloud / Render / Linux): prefer Postgres when it's configured, else SQL Server cloud
+    return "postgres" if _postgres_cfg() else "cloud"
 
 
 # ------------------------------------------------------------------ credential sources
@@ -113,9 +116,54 @@ def _cloud_from_env() -> dict:
     return {k: os.environ[v] for k, v in keys.items() if os.getenv(v)}
 
 
+# ---- Postgres (Neon / Render) : used for the hosted Streamlit/Render deployment ----
+def _parse_db_url(url: str) -> dict:
+    """postgresql://user:pass@host:port/dbname?... -> settings dict."""
+    import urllib.parse as up
+    u = up.urlparse(url)
+    return {"server": u.hostname or "", "port": u.port or 5432,
+            "user": up.unquote(u.username or ""), "password": up.unquote(u.password or ""),
+            "database": (u.path or "/").lstrip("/")}
+
+
+def _postgres_cfg() -> dict:
+    # 1) single DATABASE_URL env (Render sets this automatically when you link a DB)
+    url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+    cfg = _parse_db_url(url) if url else {}
+    # 2) discrete PG* env vars
+    env = {"server": os.getenv("PGHOST"), "port": os.getenv("PGPORT"), "user": os.getenv("PGUSER"),
+           "password": os.getenv("PGPASSWORD"), "database": os.getenv("PGDATABASE")}
+    cfg.update({k: v for k, v in env.items() if v})
+    # 3) Streamlit secrets [postgres] (url=... or discrete keys)
+    try:
+        import streamlit as st
+        from streamlit.runtime import exists
+        if exists():
+            sec = st.secrets.get("postgres")
+            if sec:
+                sec = dict(sec)
+                if sec.get("url"):
+                    cfg = {**cfg, **_parse_db_url(sec["url"])}
+                cfg.update({k: v for k, v in sec.items() if k != "url" and v})
+    except Exception:
+        pass
+    return cfg if cfg.get("server") and cfg.get("database") else {}
+
+
 # ------------------------------------------------------------------ public API
 def settings() -> dict:
     """Resolved connection settings for the active mode."""
+    if mode() == "postgres":
+        cfg = _postgres_cfg()
+        cfg.setdefault("port", 5432)
+        cfg["port"] = int(cfg.get("port") or 5432)
+        cfg.setdefault("server", "")
+        cfg.setdefault("database", "")
+        cfg.setdefault("user", "")
+        cfg.setdefault("password", "")
+        cfg["mode"] = "postgres"
+        cfg["driver"] = "psycopg"
+        return cfg
     if mode() == "cloud":
         cfg = {"port": 1433, **_cloud_from_file(), **_cloud_from_env(), **_cloud_from_secrets()}
         cfg["port"] = int(cfg.get("port") or 1433)
@@ -151,6 +199,10 @@ def cloud_configured() -> bool:
         return bool(s["server"] and s.get("user") and s.get("password") and s["database"])
     finally:
         set_mode(prev)
+
+
+def postgres_configured() -> bool:
+    return bool(_postgres_cfg())
 
 
 def odbc_conn_str(database: str | None) -> str:

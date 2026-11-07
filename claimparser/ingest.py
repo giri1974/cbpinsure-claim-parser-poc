@@ -326,7 +326,7 @@ def _assemble(case_name, case_dir, docs, bills, policy_info, claim_form, accum) 
             "coinsurance_amount": _sum([e.get("coinsurance") for e in eobs]),
             "net_payable": None,
             "other_insurance": "Yes" if eobs else ((claim_form or {}).get("other_insurance")),
-            "needs_review": 1 if notes else 0, "review_notes": "; ".join(notes) or None,
+            "needs_review": bool(notes), "review_notes": "; ".join(notes) or None,
         }
         lines = []
         for i, l in enumerate(all_lines, 1):

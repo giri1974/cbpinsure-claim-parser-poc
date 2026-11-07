@@ -1,0 +1,19 @@
+# Render blueprint: deploys the Streamlit app as a free web service using the
+# Render Postgres database. DATABASE_URL is wired automatically from the DB.
+services:
+  - type: web
+    name: cbpinsure-claim-parser-poc
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: DB_MODE
+        value: postgres
+      - key: OCR_ENGINE
+        value: rapidocr
+      - key: PORT
+        value: "8080"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cbpinsure
+          property: connectionString

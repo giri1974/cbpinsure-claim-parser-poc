@@ -229,14 +229,17 @@ def topbar() -> None:
     with settings:
         with st.popover("⚙ Settings", use_container_width=True):
             st.markdown("**Environment**")
-            db_opts = ["Cloud database", "Local database"]
+            label = {"local": "Local SQL Server", "cloud": "Cloud SQL Server", "postgres": "Cloud Postgres"}
             if sys.platform == "win32":
-                choice = st.radio("Database", db_opts, index=0 if config.mode() == "cloud" else 1,
-                                  help="Cloud = hosted SQL Server. Local = LocalDB on this PC.")
+                opts = ["Local SQL Server", "Cloud SQL Server"]
+                if config.postgres_configured():
+                    opts.append("Cloud Postgres")
+                idx = opts.index(label.get(config.mode(), opts[0])) if label.get(config.mode()) in opts else 0
+                choice = st.radio("Database", opts, index=idx)
+                config.set_mode({"Local SQL Server": "local", "Cloud SQL Server": "cloud",
+                                 "Cloud Postgres": "postgres"}[choice])
             else:
-                choice = db_opts[0]
-                st.info("Hosted server: using the cloud database.")
-            config.set_mode("cloud" if choice == db_opts[0] else "local")
+                st.info(f"Hosted server: using the {label.get(config.mode(), config.mode())}.")
 
             st.markdown("**OCR engine**")
             eng_opts = ["RapidOCR (recommended)", "Tesseract"]
@@ -248,7 +251,9 @@ def topbar() -> None:
             else:
                 config.set_engine("tesseract" if eng == eng_opts[1] else "rapidocr")
             if config.mode() == "cloud" and not config.cloud_configured():
-                st.warning("Cloud credentials not configured (see .streamlit/secrets.toml.example).")
+                st.warning("Cloud SQL credentials not configured (see .streamlit/secrets.toml.example).")
+            if config.mode() == "postgres" and not config.postgres_configured():
+                st.warning("Postgres not configured. Set DATABASE_URL or a [postgres] secret.")
             st.caption(f"Server: `{config.server_label() or 'not set'}`")
             st.caption(f"Database: `{config.database_name() or 'not set'}`")
 

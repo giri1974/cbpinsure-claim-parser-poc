@@ -148,6 +148,12 @@ class _Conn:
 
 def _open(database: str | None, autocommit: bool = False) -> _Conn:
     s = config.settings()
+    if s["driver"] == "psycopg":
+        import psycopg
+        raw = psycopg.connect(host=s["server"], port=s["port"], user=s["user"], password=s["password"],
+                              dbname=database or s["database"], sslmode="require",
+                              autocommit=autocommit, connect_timeout=20)
+        return _Conn(raw, qmark=False)
     if s["driver"] == "pymssql":
         import pymssql
         raw = pymssql.connect(server=s["server"], port=str(s["port"]), user=s["user"], password=s["password"],
@@ -158,9 +164,28 @@ def _open(database: str | None, autocommit: bool = False) -> _Conn:
     return _Conn(pyodbc.connect(config.odbc_conn_str(database), autocommit=autocommit, timeout=10), qmark=True)
 
 
+# ---- Postgres schema (dbo.* so the rest of the code's "dbo.table" SQL works unchanged) ----
+def _pg_schema() -> list[str]:
+    """Translate the SQL Server SCHEMA DDL to Postgres. Mechanical type/syntax mapping."""
+    out = ["CREATE SCHEMA IF NOT EXISTS dbo"]
+    for ddl in SCHEMA:
+        d = re.sub(r"IF OBJECT_ID\('dbo\.(\w+)'\) IS NULL\s+CREATE TABLE dbo\.\1",
+                   r"CREATE TABLE IF NOT EXISTS dbo.\1", ddl)
+        d = re.sub(r"INT IDENTITY\(1,1\)\s+PRIMARY KEY", "SERIAL PRIMARY KEY", d, flags=re.I)
+        d = re.sub(r"NVARCHAR\(MAX\)", "TEXT", d, flags=re.I)
+        d = re.sub(r"N?VARCHAR\(\d+\)", "TEXT", d, flags=re.I)
+        d = re.sub(r"DATETIME2", "TIMESTAMPTZ", d, flags=re.I)
+        d = re.sub(r"DECIMAL\(\d+,\s*\d+\)", "NUMERIC(14,2)", d, flags=re.I)
+        d = re.sub(r"\bBIT\b", "BOOLEAN", d, flags=re.I)
+        d = re.sub(r"SYSUTCDATETIME\(\)", "now()", d, flags=re.I)
+        d = re.sub(r"DEFAULT 1\b", "DEFAULT TRUE", d)   # needs_review default
+        out.append(d)
+    return out
+
+
 def ensure_database() -> None:
-    """Local: create the database if missing. Cloud: the hosted database already exists, so do nothing."""
-    if config.mode() == "cloud":
+    """Local: create the database if missing. Cloud/Postgres: the hosted database already exists."""
+    if config.mode() in ("cloud", "postgres"):
         return
     name = config.database_name()
     cn = _open("master", autocommit=True)
@@ -196,8 +221,9 @@ def connect():
 
 def init_db() -> None:
     ensure_database()
+    ddls = _pg_schema() if config.mode() == "postgres" else SCHEMA
     with connect() as cn:
-        for ddl in SCHEMA:
+        for ddl in ddls:
             cn.execute(ddl)
 
 
@@ -269,6 +295,8 @@ def update_claim_fields(claim_number: str, fields: dict) -> None:
                "date_of_service_from", "date_of_service_thru", "total_charges",
                "total_cob_allowable", "total_primary_paid", "net_payable"}
     sets = {k: v for k, v in fields.items() if k in allowed}
+    if "needs_review" in sets and sets["needs_review"] is not None:
+        sets["needs_review"] = bool(sets["needs_review"])   # BIT/BOOLEAN safe across drivers
     if not sets:
         return
     with connect() as cn:
