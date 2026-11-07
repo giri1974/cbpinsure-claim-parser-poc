@@ -137,14 +137,22 @@ def _postgres_cfg() -> dict:
     # 3) Streamlit secrets [postgres] (url=... or discrete keys)
     try:
         import streamlit as st
-        from streamlit.runtime import exists
-        if exists():
+        # accept [postgres] table, or a top-level url / DATABASE_URL in secrets
+        try:
             sec = st.secrets.get("postgres")
-            if sec:
-                sec = dict(sec)
-                if sec.get("url"):
-                    cfg = {**cfg, **_parse_db_url(sec["url"])}
-                cfg.update({k: v for k, v in sec.items() if k != "url" and v})
+        except Exception:
+            sec = None
+        if sec:
+            sec = dict(sec)
+            if sec.get("url"):
+                cfg = {**cfg, **_parse_db_url(sec["url"])}
+            cfg.update({k: v for k, v in sec.items() if k != "url" and v})
+        for top in ("DATABASE_URL", "database_url", "postgres_url"):
+            try:
+                if not cfg.get("server") and st.secrets.get(top):
+                    cfg = {**cfg, **_parse_db_url(st.secrets.get(top))}
+            except Exception:
+                pass
     except Exception:
         pass
     return cfg if cfg.get("server") and cfg.get("database") else {}
