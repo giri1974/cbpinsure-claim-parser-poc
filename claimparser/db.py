@@ -280,6 +280,12 @@ def save_case(case: dict) -> None:
                            [a[c] for c in cols])
 
 
+def bool_true(col: str) -> str:
+    """Dialect-safe 'this BIT/BOOLEAN column is true' predicate.
+    SQL Server has no TRUE literal and no bool type; Postgres rejects `= 1` on boolean."""
+    return col if config.settings()["driver"] == "psycopg" else f"{col} = 1"
+
+
 def query_df(sql: str, params=()):
     import pandas as pd
     with connect() as cn:

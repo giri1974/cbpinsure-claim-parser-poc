@@ -110,7 +110,7 @@ def complete_claim_dialog(claim_number: str) -> None:
         st.rerun()
 
 # ---- KPI strip -----------------------------------------------------------------------------------
-_k = db.query_df("""SELECT (SELECT COUNT(*) FROM dbo.claims WHERE needs_review = 1) AS review,
+_k = db.query_df(f"""SELECT (SELECT COUNT(*) FROM dbo.claims WHERE {db.bool_true('needs_review')}) AS review,
                            (SELECT COUNT(*) FROM dbo.claim_line_items) AS lines,
                            (SELECT COUNT(*) FROM dbo.source_documents) AS docs,
                            (SELECT COUNT(*) FROM dbo.document_pages) AS pages""").iloc[0]
@@ -167,12 +167,12 @@ with tab_ing:
                 st.rerun()
 
     # ---- Recent activity (real data from source_documents) ----
-    act = db.query_df("""
+    act = db.query_df(f"""
         SELECT d.case_name,
                COUNT(*) AS docs,
                SUM(COALESCE(d.page_count,0)) AS pages,
                SUM(CASE WHEN d.extract_method IN ('ocr','mixed') THEN COALESCE(d.page_count,0) ELSE 0 END) AS ocr_pages,
-               (SELECT MAX(CASE WHEN c.needs_review = 1 THEN 1 ELSE 0 END)
+               (SELECT MAX(CASE WHEN {db.bool_true('c.needs_review')} THEN 1 ELSE 0 END)
                   FROM dbo.claims c WHERE c.case_name = d.case_name) AS needs_review
         FROM dbo.source_documents d
         GROUP BY d.case_name ORDER BY d.case_name""")
