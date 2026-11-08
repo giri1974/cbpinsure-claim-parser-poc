@@ -208,8 +208,13 @@ def seg_bar(segments: list[tuple[str, int, str]]) -> str:
 
 # ----- chrome -------------------------------------------------------------------------------------
 def topbar() -> None:
-    """White app bar + Settings popover carrying the DB/OCR switches. Also connects the DB."""
+    """White app bar + Settings popover carrying the DB/OCR switches. Also gates login and connects the DB."""
+    from . import auth
     from .ocr import tesseract_available
+    user = auth.require_login()                         # blocks here until signed in
+    uname = user["username"]
+    role = user["role"]
+    role_label = "Administrator" if role == "admin" else "Claims Examiner"
     logo = _logo_b64()
     logo_html = f'<img src="data:image/png;base64,{logo}">' if logo else ""
     bar, settings = st.columns([9, 1])
@@ -221,13 +226,19 @@ def topbar() -> None:
           <div class="cbp-tb-right">
             <span class="cbp-ic">&#128269;</span>
             <span class="cbp-ic">&#128276;<span class="cbp-dot"></span></span>
-            <span class="cbp-user"><span class="cbp-ava">AK</span>
-              <span><span class="cbp-uname">Alex Kim</span><br><span class="cbp-urole">Claims Examiner</span></span>
+            <span class="cbp-user"><span class="cbp-ava">{initials(uname)}</span>
+              <span><span class="cbp-uname">{html.escape(uname)}</span><br>
+              <span class="cbp-urole">{role_label}</span></span>
             </span>
           </div>
         </div>""", unsafe_allow_html=True)
     with settings:
         with st.popover("⚙ Settings", use_container_width=True):
+            st.markdown(f"**Signed in as** {html.escape(uname)} ({role_label})")
+            if st.button("Log out", use_container_width=True):
+                auth.logout()
+                st.rerun()
+            st.divider()
             st.markdown("**Environment**")
             label = {"local": "Local SQL Server", "cloud": "Cloud SQL Server", "postgres": "Cloud Postgres"}
             if sys.platform == "win32":

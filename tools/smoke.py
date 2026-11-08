@@ -28,6 +28,8 @@ def main() -> None:
     at = AppTest.from_file(a.page, default_timeout=180)
     if a.doc:
         at.query_params["doc"] = a.doc
+    # simulate a signed-in admin so the login gate doesn't block the smoke test
+    at.session_state["auth_user"] = {"username": "admin", "role": "admin"}
     at.run()
 
     exc = [str(e.value)[:200] for e in at.exception]

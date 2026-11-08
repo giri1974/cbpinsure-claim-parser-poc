@@ -13,7 +13,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from claimparser import db, ingest, ui
+from claimparser import auth, db, ingest, ui
 from claimparser.config import DEFAULT_SAMPLES
 
 ui.page_setup("Claims Intake")
@@ -135,11 +135,15 @@ with tab_ing:
             folder = st.text_input("Folder with case sub-folders", str(DEFAULT_SAMPLES))
             if not Path(folder).exists():
                 st.warning("This folder is not available on this server. Use the upload option on the right.")
-            reset = st.checkbox("Clear existing data before loading", value=False,
-                                help="This replaces all previously indexed claim data.")
-            if reset:
-                st.markdown('<span style="color:#D64550;font-size:.8rem;">'
-                            'This replaces all previously indexed claim data.</span>', unsafe_allow_html=True)
+            if auth.can_delete():
+                reset = st.checkbox("Clear existing data before loading", value=False,
+                                    help="This replaces all previously indexed claim data.")
+                if reset:
+                    st.markdown('<span style="color:#D64550;font-size:.8rem;">'
+                                'This replaces all previously indexed claim data.</span>', unsafe_allow_html=True)
+            else:
+                reset = False
+                st.caption("🔒 Clearing existing data is restricted to administrators.")
             if st.button("▶  Parse & load folder", type="primary", disabled=not Path(folder).exists()):
                 log = st.empty()
                 lines: list[str] = []
@@ -149,7 +153,7 @@ with tab_ing:
                     log.code("\n".join(lines[-25:]))
 
                 with st.spinner("Parsing (scanned PDFs are OCR'd, first run is slow; results are cached)..."):
-                    summary = ingest.ingest_root(Path(folder), progress, reset=reset)
+                    summary = ingest.ingest_root(Path(folder), progress, reset=reset and auth.can_delete())
                 st.success(f"Loaded: {summary}")
                 st.rerun()
     with rc:
@@ -158,13 +162,29 @@ with tab_ing:
             up = st.file_uploader("PDF, XLS, XLSX or ZIP of a case folder - up to 200 MB",
                                   type=["pdf", "xls", "xlsx", "zip"])
             if up and st.button("Parse uploaded file", type="primary"):
-                tmp = Path(tempfile.mkdtemp(prefix="claims_"))
-                p = tmp / up.name
-                p.write_bytes(up.getbuffer())
-                with st.spinner("Parsing..."):
-                    summary = ingest.ingest_upload(p, tmp / "work", st.write)
-                st.success(f"Loaded: {summary}")
-                st.rerun()
+                try:
+                    tmp = Path(tempfile.mkdtemp(prefix="claims_"))
+                    p = tmp / up.name
+                    p.write_bytes(up.getbuffer())
+                    log = st.empty()
+                    msgs: list[str] = []
+
+                    def uprog(m: str) -> None:
+                        msgs.append(m)
+                        log.code("\n".join(msgs[-20:]))
+
+                    with st.spinner("Parsing (OCR of scanned pages can take ~20s per file)..."):
+                        summary = ingest.ingest_upload(p, tmp / "work", uprog)
+                    if summary.get("documents", 0) == 0:
+                        st.warning("No claim document was recognised in the upload. Expected a claim-package ZIP, "
+                                   "or a bill PDF named like `25016400-01.pdf`.")
+                    else:
+                        st.success(f"Loaded: {summary}")
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Upload failed: {type(e).__name__}: {str(e)[:300]}")
+                    st.info("If this is a large scanned file on the hosted demo, it may exceed the free-tier "
+                            "memory for on-the-fly OCR. Try a smaller PDF, or load data from the sample folder.")
 
     # ---- Recent activity (real data from source_documents) ----
     act = db.query_df(f"""

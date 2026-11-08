@@ -74,3 +74,13 @@ Notes for any hosted deployment:
 * Credentials come from secrets / env (`DATABASE_URL` or `[postgres]`), never the repo.
 * The Document Viewer shows OCR text + parsed fields; original page images need the source PDFs
   on disk, which aren't in the image. Uploads still work.
+
+## Login & roles
+The app requires sign-in. Two roles:
+* **admin** — full control, including "Clear existing data" (delete) operations.
+* **user** — everything except delete operations (the clear-data control is hidden and enforced server-side).
+
+Set credentials (never in the repo):
+* Streamlit Cloud: App → Settings → Secrets, add an `[auth]` block (see `.streamlit/secrets.toml.example`).
+* Local / other hosts: env vars `APP_ADMIN_PASSWORD`, `APP_USER_PASSWORD` (and optional `APP_ADMIN_USER`, `APP_USER_USER`).
+* Local dev fallback if nothing is set: `admin` / `admin123` and `user` / `user123` — change before any shared deployment.
