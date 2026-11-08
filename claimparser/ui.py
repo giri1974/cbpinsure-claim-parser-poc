@@ -288,7 +288,8 @@ def page_title(title: str, subtitle: str, secure: bool = False) -> None:
 
 def footer() -> None:
     st.markdown('<div class="cbp-footer">Co-Ordinated Benefit Plans, a subsidiary of ONE80 Intermediaries'
-                ' &nbsp;|&nbsp; POC build for demonstration</div>', unsafe_allow_html=True)
+                ' &nbsp;|&nbsp; POC build for demonstration'
+                '<br>Demo for CBPInsure built and owned by Trigent</div>', unsafe_allow_html=True)
 
 
 def open_document(doc_id: int) -> None:
